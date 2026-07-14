@@ -180,8 +180,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    # create runner from rsl-rl
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    # --- workaround: rsl-rl 5.x needs actor/critic in cfg, but Hydra's from_dict corrupts them ---
+    from isaaclab_rl.rsl_rl import RslRlMLPModelCfg
+    agent_cfg.actor = RslRlMLPModelCfg(
+        class_name="MLPModel",
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
+    )
+    agent_cfg.critic = RslRlMLPModelCfg(
+        class_name="MLPModel",
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+    )
+    cfg_dict = agent_cfg.to_dict()
+    for key in ["actor", "critic"]:
+        for field in ["stochastic", "init_noise_std", "noise_std_type", "state_dependent_std"]:
+            cfg_dict[key].pop(field, None)
+    # -----------------------------------------------------------------------------------------
+    runner = OnPolicyRunner(env, cfg_dict, log_dir=log_dir, device=agent_cfg.device)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
