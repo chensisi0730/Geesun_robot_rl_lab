@@ -71,18 +71,26 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
     ./unitree_rl_lab.sh -l # This is a faster version than isaaclab
     ```
   - Running a task:
+    g1: 平地  2026-07-08_14-09-16
+    GO2：平地 unitree_go2_velocity/2026-07-08_21-46-54
 
     ```bash
     ./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity # support for autocomplete task-name
     # same as
-    python scripts/rsl_rl/train.py --headless --task Unitree-G1-29dof-Velocity
+    conda run -n env_isaaclab_sim5  python scripts/rsl_rl/train.py --headless --task Unitree-G1-29dof-Velocity --num_envs 12000 --resume  --load_run 2026-07-21_13-42-56
+
+    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/train.py --headless --task Unitree-Go2-Velocity --num_envs 12000 --resume
+
+    tensorboard --logdir logs/rsl_rl/
+
     ```
   - Inference with a trained agent:
 
     ```bash
     ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity # support for autocomplete task-name
     # same as
-    python scripts/rsl_rl/play.py --task Unitree-G1-29dof-Velocity
+    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-G1-29dof-Velocity
+    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-Go2-Velocity 
     ```
 
 ## Deploy
