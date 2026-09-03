@@ -33,7 +33,7 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
   - Use a python interpreter that has Isaac Lab installed, install the library in editable mode using:
 
     ```bash
-    conda activate env_isaaclab
+    conda activate env_isaaclab_sim5
     ./unitree_rl_lab.sh -i
     # restart your shell to activate the environment changes.
     ```
@@ -90,7 +90,7 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
     ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity # support for autocomplete task-name
     # same as
     conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-G1-29dof-Velocity
-    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-Go2-Velocity 
+    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-Go2-Velocity   --load_run 2026-08-31_23-22-03
     ```
 
 ## Deploy
