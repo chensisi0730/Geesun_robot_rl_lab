@@ -93,6 +93,49 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
     conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-Go2-Velocity   --load_run 2026-08-31_23-22-03
     ```
 
+### Torque Statistics (Motor Selection)
+
+`scripts/rsl_rl/record_torque_stats.py` runs a **trained checkpoint** in the play environment and records the per-joint actuator applied torque at every control step. It outputs three statistics per joint, which serve as a reference for motor selection:
+
+| Statistic | Meaning |
+|---|---|
+| `Peak \|tau\|` | Max absolute torque over all samples — use with a 1.5-2.0x safety margin to select peak (peak/short-time) torque. |
+| `P99 \|tau\|` | 99th percentile of absolute torque — robust against rare spikes, closer to sustained worst-case load. |
+| `RMS` | Root-mean-square torque — compare against motor continuous/thermal rating. |
+
+**Usage:**
+
+```bash
+# Explicit checkpoint:
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/record_torque_stats.py \
+    --task Unitree-Go2-Velocity \
+    --checkpoint logs/rsl_rl/unitree_go2_velocity/<run>/model_7300.pt --steps 500
+
+# Automatically load the latest run / latest checkpoint:
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/record_torque_stats.py --task Unitree-Go2-Velocity
+```
+
+**Arguments:**
+
+| Argument | Default | Description |
+|---|---|---|
+| `--task` | `Unitree-Go2-Velocity` | Task name (e.g. `Unitree-G1-29dof-Velocity`, `Unitree-Go2-Velocity`). |
+| `--num_envs` | 64 | Number of parallel play environments to simulate. |
+| `--steps` | 500 | Number of policy steps to record. |
+| `--warmup` | 50 | Initial discarded steps used to skip the settling transient after spawning. |
+| `--output` | `<checkpoint_dir>/torque_stats.csv` | Output CSV path (auto-named if omitted). |
+| `--save_raw` | off | Additionally save raw torque samples to a `.npz` file for further analysis. |
+| `--disable_fabric` | off | Disable fabric and use USD I/O operations. |
+| RSL-RL args | — | Standard arguments like `--experiment_name`, `--load_run`, `--checkpoint`. For example, to specify a particular run: add `--load_run 2026-08-31_23-22-03`. |
+
+**Output:**
+
+- A formatted table is printed to the console (per-joint peak/P99/RMS + pooled values).
+- A CSV file (`torque_stats.csv`) with columns `joint, peak_abs_torque_Nm, p99_abs_torque_Nm, rms_torque_Nm` is saved next to the checkpoint.
+- If `--save_raw` is set, raw samples are also saved to `<output_stem>_raw.npz` (keys: `torques`, `joint_names`, `checkpoint`).
+
+> **Note:** This script only supports manager-based RL environments and requires a previously trained checkpoint under `logs/rsl_rl/<experiment_name>/`. It uses the *play* environment configuration (`play_env_cfg_entry_point`) with no terrain curriculum.
+
 ## Deploy
 
 After the model training is completed, we need to perform sim2sim on the trained strategy in Mujoco to test the performance of the model.
