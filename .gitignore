@@ -69,7 +69,12 @@ datasets
 *.obj
 *.mtl
 *.STL
+# Geesun dog asset meshes are required by the URDF, keep them in the repo
+!unitree_model/geesun_dog/**/*.STL
 **/env.yaml
 
 # Mimic
 *.npz
+
+# Local model download archive (large generated file)
+unitree_model.zip
