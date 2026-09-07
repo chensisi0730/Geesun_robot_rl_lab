@@ -3,7 +3,7 @@
 ## 项目结构与模块组织
 
 - `source/unitree_rl_lab/unitree_rl_lab/` 包含可安装的 Python 包、机器人资产、任务定义、MDP 项和配置。
-- `scripts/` 提供运行入口，包括 `list_envs.py`、RSL-RL 训练/推理，以及动作模仿转换和回放工具。
+- `scripts/` 提供运行入口，包括 `list_envs.py`、RSL-RL 训练/推理、动作模仿转换和回放工具，以及 `geesun_dog/move_geesun_dog.py`（将 `unitree_model/geesun_dog` 的 dog1 URDF 导入 Isaac Sim 并驱动全部 12 个关节；URDF 的空 hip 网格、零限位等问题在 `assets/robots/unitree.py` 中自动修复）。
 - `deploy/` 包含 C++ sim2real 控制器、各机器人配置和随附的 ONNX Runtime 依赖。
 - `unitree_model/` 存放 Unitree USD 资产（如已提供）；`logs/` 和 `outputs/` 保存生成的运行结果，不应作为源代码编辑。
 - `docker/` 包含容器构建与编排文件；`doc/` 包含许可证和项目文档。

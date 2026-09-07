@@ -233,3 +233,18 @@ class UnitreeActuatorCfg_W4010_25(UnitreeActuatorCfg):
     | gear_2 |                | ratio | 5
     """
     armature = 0.00425
+
+
+@configclass
+class UnitreeActuatorCfg_GeesunDog(UnitreeActuatorCfg):
+    """Approximation for the Geesun dog (dog1) actuators.
+
+    The URDF does not specify actuator models, so this uses a GO2-like
+    torque-speed curve as a reasonable default for a medium-sized quadruped.
+    Adjust Y1/Y2/X1/X2/armature if you have real specs.
+    """
+
+    X1 = 13.5
+    X2 = 30.0
+    Y1 = 25.0
+    Y2 = 30.0

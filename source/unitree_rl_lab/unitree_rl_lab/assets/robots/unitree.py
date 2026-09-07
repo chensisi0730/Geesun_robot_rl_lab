@@ -715,3 +715,270 @@ for a in UNITREE_G1_29DOF_MIMIC_CFG.actuators.values():
     for n in names:
         if n in e and n in s and s[n]:
             UNITREE_G1_29DOF_MIMIC_ACTION_SCALE[n] = 0.25 * e[n] / s[n]
+
+
+""" Configuration for the Geesun dog (dog1) quadruped robot."""
+
+# GEESUN_DOG_DIR = f"{UNITREE_MODEL_DIR}/geesun_dog/geesun-dog/dog1"  # not available in UNITREE_MODEL_DIR
+_GEESUN_REPO_ROOT = (
+    os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))))
+)
+GEESUN_DOG_DIR = os.path.join(_GEESUN_REPO_ROOT, "unitree_model", "geesun_dog")
+
+
+def _write_placeholder_cylinder_stl(path: str, radius: float, length: float, segments: int = 24) -> None:
+    """Write a binary STL cylinder along the X axis (used to replace broken/empty meshes).
+
+    The original ``Link_*_hip.STL`` files exported from SolidWorks are empty (80-byte header
+    with zero triangles), which crashes Isaac Sim's URDF importer. We generate a simple
+    cylinder (approximating the hip motor housing) as a placeholder so the model imports.
+    """
+    import math
+    import struct
+
+    tris = []
+    half = length * 0.5
+
+    def tri(p0, p1, p2, n):
+        tris.append((n, p0, p1, p2))
+
+    # side wall
+    for i in range(segments):
+        a0 = 2.0 * math.pi * i / segments
+        a1 = 2.0 * math.pi * (i + 1) / segments
+        x0, x1 = -half, half
+        p00 = (x0, radius * math.cos(a0), radius * math.sin(a0))
+        p01 = (x0, radius * math.cos(a1), radius * math.sin(a1))
+        p10 = (x1, radius * math.cos(a0), radius * math.sin(a0))
+        p11 = (x1, radius * math.cos(a1), radius * math.sin(a1))
+        n0 = (0.0, math.cos(a0), math.sin(a0))
+        n1 = (0.0, math.cos(a1), math.sin(a1))
+        nm = (0.0, math.cos(0.5 * (a0 + a1)), math.sin(0.5 * (a0 + a1)))
+        tri(p00, p11, p01, n1)
+        tri(p00, p10, p11, nm)
+        # caps
+        cap0 = (-1.0, 0.0, 0.0)
+        cap1 = (1.0, 0.0, 0.0)
+        tri((x0, 0.0, 0.0), p01, p00, cap0)
+        tri((x1, 0.0, 0.0), p10, p11, cap1)
+
+    with open(path, "wb") as f:
+        f.write(b"placeholder hip cylinder" + b" " * (80 - len(b"placeholder hip cylinder")))
+        f.write(struct.pack("<I", len(tris)))
+        for n, p0, p1, p2 in tris:
+            f.write(struct.pack("<3f", *n))
+            f.write(struct.pack("<3f", *p0))
+            f.write(struct.pack("<3f", *p1))
+            f.write(struct.pack("<3f", *p2))
+            f.write(struct.pack("<H", 0))
+
+
+def _prepare_geesun_dog_urdf() -> None:
+    """Create a temporary URDF copy with fixed mesh paths, joint limits and placeholder meshes.
+
+    The dog URDF references meshes via ``package://dog1/meshes/...`` which Isaac Sim's URDF importer
+    cannot resolve, and the four ``Link_*_hip.STL`` files are empty (80-byte header, zero triangles)
+    which makes the URDF importer crash. We create a fixed copy of the URDF in a temp directory:
+    all mesh references use absolute paths, and the empty hip meshes are replaced by generated
+    placeholder cylinders.
+
+    Layout::
+
+        /tmp/IsaacLab/geesun_dog/dog1.urdf                  (copy with rewritten references)
+        /tmp/IsaacLab/geesun_dog/meshes/Link_*_hip.STL      (generated placeholder cylinders)
+
+    The original asset is never modified.
+    """
+    import re
+    import shutil
+
+    tmp_pkg_dir = "/tmp/IsaacLab/geesun_dog"
+    tmp_mesh_dir = f"{tmp_pkg_dir}/meshes"
+    src_urdf = f"{GEESUN_DOG_DIR}/geesun-dog/dog1/urdf/dog1.urdf"
+    dst_urdf = f"{tmp_pkg_dir}/dog1.urdf"
+    os.makedirs(tmp_mesh_dir, exist_ok=True)
+
+    # Generate placeholder STL for the four empty hip meshes; copy all other meshes.
+    empty_hip_meshes = ["Link_fr_hip.STL", "Link_fl_hip.STL", "Link_hl_hip.STL", "Link_hr_hip.STL"]
+    for name in empty_hip_meshes:
+        src_mesh = f"{GEESUN_DOG_DIR}/geesun-dog/dog1/meshes/{name}"
+        dst_mesh = f"{tmp_mesh_dir}/{name}"
+        is_empty = (not os.path.exists(src_mesh)) or os.path.getsize(src_mesh) <= 84
+        if is_empty:
+            _write_placeholder_cylinder_stl(dst_mesh, radius=0.035, length=0.08)
+        else:
+            shutil.copyfile(src_mesh, dst_mesh)
+
+    with open(src_urdf, "r") as f:
+        content = f.read()
+
+    # Replace package://dog1/meshes/FILE with an absolute path to the real meshes dir,
+    # except for the empty hip meshes which point to the generated placeholders.
+    meshes_abs = os.path.abspath(f"{GEESUN_DOG_DIR}/geesun-dog/dog1/meshes")
+    content = re.sub(r"package://dog1/meshes/", f"{meshes_abs}/", content)
+    for name in empty_hip_meshes:
+        content = content.replace(f"{meshes_abs}/{name}", f"{tmp_mesh_dir}/{name}")
+
+    # The URDF has all joint limits set to [0, 0] (SolidWorks export default).
+    # Replace with reasonable ranges so the robot can actually move.
+    # Front legs: thigh forward (+), calf backward (-); Rear legs: thigh backward (-), calf forward (+)
+    content = re.sub(
+        r'(<joint\s+name="joint_fr_thigh".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+        lambda m: f'{m.group(1)}"-2.0"{m.group(2)}"2.5"',
+        content,
+        flags=re.DOTALL,
+    )
+    content = re.sub(
+        r'(<joint\s+name="joint_fl_thigh".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+        lambda m: f'{m.group(1)}"-2.0"{m.group(2)}"2.5"',
+        content,
+        flags=re.DOTALL,
+    )
+    content = re.sub(
+        r'(<joint\s+name="joint_hl_thigh".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+        lambda m: f'{m.group(1)}"-2.5"{m.group(2)}"2.0"',
+        content,
+        flags=re.DOTALL,
+    )
+    content = re.sub(
+        r'(<joint\s+name="joint_hr_thigh".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+        lambda m: f'{m.group(1)}"-2.5"{m.group(2)}"2.0"',
+        content,
+        flags=re.DOTALL,
+    )
+    content = re.sub(
+        r'(<joint\s+name="joint_fr_calf".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+        lambda m: f'{m.group(1)}"-2.5"{m.group(2)}"0.5"',
+        content,
+        flags=re.DOTALL,
+    )
+    content = re.sub(
+        r'(<joint\s+name="joint_fl_calf".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+        lambda m: f'{m.group(1)}"-2.5"{m.group(2)}"0.5"',
+        content,
+        flags=re.DOTALL,
+    )
+    content = re.sub(
+        r'(<joint\s+name="joint_hl_calf".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+        lambda m: f'{m.group(1)}"-0.5"{m.group(2)}"2.5"',
+        content,
+        flags=re.DOTALL,
+    )
+    content = re.sub(
+        r'(<joint\s+name="joint_hr_calf".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+        lambda m: f'{m.group(1)}"-0.5"{m.group(2)}"2.5"',
+        content,
+        flags=re.DOTALL,
+    )
+    # Hip joints (all 4): symmetric range
+    for hip in ["joint_fr_hip", "joint_fl_hip", "joint_hr_hip", "joint_hl_hip"]:
+        content = re.sub(
+            rf'(<joint\s+name="{hip}".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+            lambda m: f'{m.group(1)}"-0.8"{m.group(2)}"0.8"',
+            content,
+            flags=re.DOTALL,
+        )
+
+    # Also set non-zero effort/velocity limits so the URDF is well-formed
+    content = re.sub(r'effort="0"\s+velocity="0"', 'effort="100" velocity="25"', content)
+
+    # Skip writing if the temp URDF is already up-to-date (keeps mtime stable so the
+    # converted USD asset does not need to be regenerated on every import).
+    if os.path.exists(dst_urdf):
+        with open(dst_urdf, "r") as f:
+            if f.read() == content:
+                return
+    with open(dst_urdf, "w") as f:
+        f.write(content)
+
+
+
+_prepare_geesun_dog_urdf()
+
+# Converted USD asset (generated from the fixed URDF by `scripts/geesun_dog/convert_geesun_dog.py`
+# or by any caller via `ensure_geesun_dog_usd()`). Converting the URDF during scene creation
+# (UrdfFileCfg spawn) deadlocks inside the URDF importer on this setup, so the scene spawns
+# from the pre-converted USD instead.
+GEESUN_DOG_USD = "/tmp/IsaacLab/geesun_dog/dog1.usd"
+
+
+def ensure_geesun_dog_usd() -> str:
+    """Convert the Geesun dog URDF to USD if the converted asset does not exist yet.
+
+    Returns:
+        The path to the converted USD file.
+    """
+    urdf_path = "/tmp/IsaacLab/geesun_dog/dog1.urdf"
+    if os.path.exists(GEESUN_DOG_USD) and os.path.getmtime(GEESUN_DOG_USD) >= os.path.getmtime(urdf_path):
+        return GEESUN_DOG_USD
+
+    from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg
+
+    converter = UrdfConverter(
+        UrdfConverterCfg(
+            asset_path=urdf_path,
+            usd_dir=os.path.dirname(GEESUN_DOG_USD),
+            usd_file_name=os.path.splitext(os.path.basename(GEESUN_DOG_USD))[0],
+            make_instanceable=True,
+            fix_base=False,
+            joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
+                gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
+            ),
+        )
+    )
+    return converter.usd_path
+
+
+GEESUN_DOG_CFG = UnitreeArticulationCfg(
+    spawn=sim_utils.UsdFileCfg(
+        usd_path=GEESUN_DOG_USD,
+        activate_contact_sensors=True,
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=True,
+            solver_position_iteration_count=8,
+            solver_velocity_iteration_count=4,
+        ),
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            retain_accelerations=False,
+            linear_damping=0.0,
+            angular_damping=0.0,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_depenetration_velocity=1.0,
+        ),
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.2),
+        joint_pos={
+            # front legs (fr/fl): thigh forward (+), calf backward (-)
+            "joint_fr_thigh": 1.0,
+            "joint_fl_thigh": 1.0,
+            "joint_fr_calf": -1.4,
+            "joint_fl_calf": -1.4,
+            # rear legs (hl/hr): thigh backward (-), calf forward (+)
+            "joint_hl_thigh": -1.0,
+            "joint_hr_thigh": -1.0,
+            "joint_hl_calf": 1.4,
+            "joint_hr_calf": 1.4,
+        },
+        joint_vel={"joint_.*": 0.0},
+    ),
+    actuators={
+        "GeEsunDog": unitree_actuators.UnitreeActuatorCfg_GeesunDog(
+            joint_names_expr=["joint_.*"],
+            stiffness=30.0,
+            damping=1.0,
+            friction=0.02,
+        ),
+    },
+    # fmt: off
+    joint_sdk_names=[
+        "joint_fr_hip", "joint_fr_thigh", "joint_fr_calf",
+        "joint_fl_hip", "joint_fl_thigh", "joint_fl_calf",
+        "joint_hr_hip", "joint_hr_thigh", "joint_hr_calf",
+        "joint_hl_hip", "joint_hl_thigh", "joint_hl_calf",
+    ],
+    # fmt: on
+)

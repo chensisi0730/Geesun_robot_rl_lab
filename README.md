@@ -80,7 +80,8 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
     conda run -n env_isaaclab_sim5  python scripts/rsl_rl/train.py --headless --task Unitree-G1-29dof-Velocity --num_envs 12000 --resume  --load_run 2026-07-21_13-42-56
 
     conda run -n env_isaaclab_sim5 python scripts/rsl_rl/train.py --headless --task Unitree-Go2-Velocity --num_envs 12000 --resume
-
+    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/train.py --headless --task Unitree-GeesunDog-Velocity --num_envs 12000
+    
     tensorboard --logdir logs/rsl_rl/
 
     ```
@@ -91,6 +92,7 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
     # same as
     conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-G1-29dof-Velocity
     conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-Go2-Velocity   --load_run 2026-08-31_23-22-03
+    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-GeesunDog-Velocity
     ```
 
 ### Torque Statistics (Motor Selection)
@@ -135,6 +137,139 @@ conda run -n env_isaaclab_sim5 python scripts/rsl_rl/record_torque_stats.py --ta
 - If `--save_raw` is set, raw samples are also saved to `<output_stem>_raw.npz` (keys: `torques`, `joint_names`, `checkpoint`).
 
 > **Note:** This script only supports manager-based RL environments and requires a previously trained checkpoint under `logs/rsl_rl/<experiment_name>/`. It uses the *play* environment configuration (`play_env_cfg_entry_point`) with no terrain curriculum.
+
+> **故障排查：控制台只显示部分关节的力矩表格**
+>
+> 现象：终端/日志里力矩表格只打印出前面若干行（如 8 个关节）就没了，看不到 `ALL (pooled)` 汇总行和 `[INFO] Statistics saved` 提示。
+>
+> 原因：Isaac Sim（kit）退出时是硬退出，不会刷新 Python 的 stdout 缓冲区。当 stdout 是管道时（`conda run`、`| tee`、`> log` 等均为块缓冲），缓冲区末尾未 flush 的内容会被静默丢弃——表格后半部分因此丢失。
+>
+> 说明：这只影响**控制台显示**，CSV 文件的数据始终是完整的（包含全部关节），可以放心使用 CSV 做电机选型分析。
+>
+> 解决（二选一）：
+> 1. 脚本已在结果打印结束后显式 `sys.stdout.flush()`，直接重新运行即可；
+> 2. 或运行时加 `-u` 关闭缓冲：`python -u scripts/rsl_rl/record_torque_stats.py ...`。
+
+### 验证训练结果
+
+训练完成后，需要验证策略在不同地形上的性能。以下是验证步骤：
+
+#### 1. 平地行走测试
+
+使用 `test_flat_walk.py` 脚本在纯平地形上测试策略：
+
+```bash
+# 测试 Go2 在平地上的行走性能
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
+    --task Unitree-Go2-Velocity \
+    --checkpoint logs/rsl_rl/unitree_go2_velocity/<run>/model_7300.pt --steps 500
+
+# 或自动加载最新训练结果
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity
+```
+
+**输出指标：**
+- 平均前进速度（m/s）
+- 平均高度（m）
+- 高度方差（m²）- 衡量行走稳定性
+- 各关节力矩统计（峰值、P99、RMS）
+
+> 若控制台的力矩表格只显示部分关节（如 8 个），属于 Isaac Sim 硬退出导致 stdout 缓冲未刷新的显示问题，CSV 数据是完整的；脚本已加 `sys.stdout.flush()` 修复，详见上文故障排查说明。
+
+#### 2. 复杂地形测试
+
+使用 `play.py` 在复杂地形上测试策略：
+
+```bash
+# 在复杂地形上测试
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-Go2-Velocity --load_run <run_id>
+```
+
+**观察要点：**
+- 机器人能否稳定行走
+- 是否能适应不同地形
+- 步态是否自然
+
+#### 3. 力矩统计分析
+
+使用 `record_torque_stats.py` 分析关节力矩，为电机选型提供参考：
+
+```bash
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/record_torque_stats.py \
+    --task Unitree-Go2-Velocity --steps 1000
+```
+
+#### 4. TensorBoard 监控
+
+训练过程中使用 TensorBoard 监控关键指标：
+
+```bash
+tensorboard --logdir logs/rsl_rl/
+```
+
+**关键指标：**
+- `rewards/track_lin_vel_xy`: 速度跟踪奖励
+- `rewards/track_ang_vel_z`: 角速度跟踪奖励
+- `losses/policy_loss`: 策略损失
+- `losses/value_loss`: 价值损失
+
+#### 5. 验证清单
+
+- [ ] 平地行走稳定，无明显晃动
+- [ ] 速度跟踪准确，能达到目标速度
+- [ ] 关节力矩在电机额定范围内
+- [ ] 复杂地形适应性良好
+- [ ] 步态自然，无异常动作
+
+### Geesun Dog 导入与全关节运动演示（dog1）
+
+`scripts/geesun_dog/move_geesun_dog.py` 将自研 Geesun 四足机器人（`unitree_model/geesun_dog/geesun-dog/dog1/urdf/dog1.urdf`，4 条腿 x hip/thigh/calf 共 12 个关节）导入 Isaac Sim，并以对角步态（trot）正弦曲线驱动全部关节运动，便于直观检查整条运动链。
+
+**自动修复的资产问题**（不修改原始资产，修复副本写入 `/tmp/IsaacLab/geesun_dog/`）：
+
+| SolidWorks 导出 URDF 中的问题 | 自动修复方式 |
+|---|---|
+| 网格以 `package://dog1/meshes/...` 引用（无 ROS 无法解析） | 重写为绝对路径 |
+| `Link_fr/fl/hl/hr_hip.STL` 为空文件（仅 80 字节头、0 个三角形），导入器会丢弃/崩溃 | 自动生成占位圆柱网格（半径 0.035 m、长 0.08 m、沿髋关节轴） |
+| 所有关节 `limit lower/upper/effort/velocity` 均为 0，机器人无法运动 | 替换为合理范围（hip ±0.8，thigh -2.0~2.5 / 镜像，calf -2.5~0.5 / 镜像），effort=100，velocity=25 |
+| 在 `InteractiveScene` 创建过程中做 URDF 转换会使导入器死锁（Isaac Sim 5.1） | 先单独把 URDF 转成 USD（`ensure_geesun_dog_usd()`，按 mtime 缓存），场景再从 USD 生成 |
+
+**用法：**
+
+```bash
+conda activate env_isaaclab_sim5
+python scripts/geesun_dog/move_geesun_dog.py                    # 图形界面，2000 步
+python scripts/geesun_dog/move_geesun_dog.py --num_steps 0      # 一直运行，直到关闭窗口
+python scripts/geesun_dog/move_geesun_dog.py --headless --num_steps 300     # 无界面快速检查
+python scripts/geesun_dog/move_geesun_dog.py --gait_freq 2.0 --amp_deg 35   # 更快/摆幅更大
+```
+
+**参数：**
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--num_steps` | 2000 | 物理步数（`0` = 一直运行直到关闭窗口） |
+| `--gait_freq` | 1.5 Hz | 关节正弦运动频率（对角步态，对角腿同相位） |
+| `--amp_deg` | 25 | 关节摆动幅度（度），髋关节减半 |
+| `--headless` | 关 | 无图形界面运行 |
+| `--device` | `cuda:0` | 也可用 `cpu`，但建议使用 GPU |
+
+**验证要点：**
+
+1. `./unitree_rl_lab.sh -l` 能查到已注册任务 `Unitree-GeesunDog-Velocity`（位于 `tasks/locomotion/robots/geesun_dog/`，复用 Go2 的速度跟踪任务结构）。
+2. 控制台打印 `Using converted USD: /tmp/IsaacLab/geesun_dog/dog1.usd` 和 `Loaded robot joints: [12 个关节名]`。
+3. 控制台每 100 步打印 `[step N] joint_pos (rad):`，且 12 个关节值**持续振荡**（相邻打印之间没有数值冻结不变）。
+4. 图形界面中机器人悬浮在离地约 1 m 处（基座被固定以便四条腿自由摆动），四条腿原地小跑。
+5. 首次启动需要几分钟：URDF→USD 转换（约 1 分钟）+ 着色器编译（约 3~5 分钟）。如需强制重新转换：`rm -rf /tmp/IsaacLab/geesun_dog`。
+
+**任务训练（可选）：**
+
+```bash
+./unitree_rl_lab.sh -t --task Unitree-GeesunDog-Velocity --num_envs 4096
+tensorboard --logdir logs/rsl_rl/
+```
+
+> **注意：** 若关节位置冻结在固定姿态，说明腿与地面或彼此卡死——可在脚本中调高基座高度（`default_root[0, 2]`）或减小 `--amp_deg`。
 
 ## Deploy
 
