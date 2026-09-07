@@ -3,18 +3,18 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Record per-joint applied torque statistics (peak / 99th percentile / RMS) from a trained policy.
+"""Test a trained policy on flat terrain.
 
-This script runs a trained checkpoint in the play environment and logs the actuator applied
-torque of every joint at each control step. The statistics are intended as a reference for
-motor selection (peak torque, continuous torque, thermal sizing).
+This script runs a trained checkpoint in a flat terrain environment and records
+the robot's walking performance. It is useful for evaluating the policy's
+performance on flat ground without terrain complexity.
 
 Usage:
-    python scripts/rsl_rl/record_torque_stats.py --task Unitree-Go2-Velocity \
+    python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity \
         --checkpoint logs/rsl_rl/unitree_go2_velocity/<run>/model_7300.pt --steps 500
 
     # or automatically load the latest run / latest checkpoint:
-    python scripts/rsl_rl/record_torque_stats.py --task Unitree-Go2-Velocity
+    python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -26,13 +26,13 @@ from isaaclab.app import AppLauncher
 # local imports
 import cli_args  # isort: skip
 
-parser = argparse.ArgumentParser(description="Record per-joint torque statistics (max, p99, RMS) for motor selection.")
+parser = argparse.ArgumentParser(description="Test trained policy on flat terrain.")
 parser.add_argument("--task", type=str, default="Unitree-Go2-Velocity", help="Name of the task.")
 parser.add_argument("--num_envs", type=int, default=64, help="Number of environments to simulate.")
 parser.add_argument("--steps", type=int, default=500, help="Number of policy steps to record.")
 parser.add_argument("--warmup", type=int, default=50, help="Initial steps discarded to skip settling transient.")
 parser.add_argument(
-    "--output", type=str, default=None, help="Output CSV path. Defaults to <checkpoint_dir>/torque_stats.csv."
+    "--output", type=str, default=None, help="Output CSV path. Defaults to <checkpoint_dir>/flat_walk_stats.csv."
 )
 parser.add_argument(
     "--save_raw", action="store_true", default=False, help="Additionally save raw torque samples to .npz."
@@ -68,6 +68,8 @@ from isaaclab_tasks.utils import get_checkpoint_path
 import unitree_rl_lab.tasks  # noqa: F401
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
 
+import isaaclab.terrains as terrain_gen
+
 
 def resolve_checkpoint(agent_cfg) -> str:
     """Resolve the checkpoint path from CLI arguments or the latest training run."""
@@ -88,6 +90,24 @@ def main():
         use_fabric=not args_cli.disable_fabric,
         entry_point_key="play_env_cfg_entry_point",
     )
+
+    # Override terrain to flat only
+    flat_terrain_cfg = terrain_gen.TerrainGeneratorCfg(
+        size=(8.0, 8.0),
+        border_width=20.0,
+        num_rows=2,
+        num_cols=1,
+        horizontal_scale=0.1,
+        vertical_scale=0.005,
+        slope_threshold=0.75,
+        difficulty_range=(0.0, 0.0),
+        use_cache=False,
+        sub_terrains={
+            "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=1.0),
+        },
+    )
+    env_cfg.scene.terrain.terrain_generator = flat_terrain_cfg
+
     agent_cfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
     resume_path = resolve_checkpoint(agent_cfg)
@@ -114,6 +134,8 @@ def main():
     obs = result[0] if isinstance(result, tuple) else result
 
     torque_samples: list[torch.Tensor] = []  # each: (num_envs, num_joints)
+    position_samples: list[torch.Tensor] = []  # each: (num_envs, 3) for base position
+    velocity_samples: list[torch.Tensor] = []  # each: (num_envs, 6) for base velocity
     print(f"[INFO] Recording {args_cli.steps} steps ({args_cli.warmup} warmup steps discarded) ...")
 
     for step in range(args_cli.steps):
@@ -122,11 +144,16 @@ def main():
             obs, _, _, _ = env.step(actions)
         if step >= args_cli.warmup:
             torque_samples.append(robot.data.applied_torque.clone())
+            position_samples.append(robot.data.root_pos_w.clone())
+            velocity_samples.append(robot.data.root_lin_vel_w.clone())
 
     env.close()
 
     # stack samples: (num_samples, num_joints)
     torques = torch.stack(torque_samples, dim=0).flatten(0, 1).to("cpu")
+    positions = torch.stack(position_samples, dim=0).flatten(0, 1).to("cpu")
+    velocities = torch.stack(velocity_samples, dim=0).flatten(0, 1).to("cpu")
+
     abs_torques = torques.abs()
 
     # per-joint statistics for motor selection
@@ -150,13 +177,32 @@ def main():
     pooled_rms = abs_torques.pow(2).mean().sqrt().item()
     print(f"{'ALL (pooled)':<28}{pooled_peak:>18.3f}{pooled_p99:>18.3f}{pooled_rms:>14.3f}\n")
 
+    # Print walking performance metrics
+    print("[INFO] Walking performance metrics:")
+    # Calculate average forward velocity (x-direction)
+    avg_forward_vel = velocities[:, 0].mean().item()
+    # Calculate average height (z-position)
+    avg_height = positions[:, 2].mean().item()
+    # Calculate height variance (stability)
+    height_var = positions[:, 2].var().item()
+
+    print(f"  Average forward velocity: {avg_forward_vel:.3f} m/s")
+    print(f"  Average height: {avg_height:.3f} m")
+    print(f"  Height variance: {height_var:.6f} m²")
+    print(f"  Walking stability: {'Stable' if height_var < 0.01 else 'Unstable'}")
+
     # save results
-    output_path = args_cli.output or os.path.join(os.path.dirname(resume_path), "torque_stats.csv")
+    output_path = args_cli.output or os.path.join(os.path.dirname(resume_path), "flat_walk_stats.csv")
     with open(output_path, mode="w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["joint", "peak_abs_torque_Nm", "p99_abs_torque_Nm", "rms_torque_Nm"])
         for j, name in enumerate(joint_names):
             writer.writerow([name, f"{peak[j].item():.4f}", f"{p99[j].item():.4f}", f"{rms[j].item():.4f}"])
+        writer.writerow([])
+        writer.writerow(["metric", "value"])
+        writer.writerow(["average_forward_velocity_ms", f"{avg_forward_vel:.4f}"])
+        writer.writerow(["average_height_m", f"{avg_height:.4f}"])
+        writer.writerow(["height_variance_m2", f"{height_var:.6f}"])
     print(f"[INFO] Statistics saved to: {output_path}")
 
     if args_cli.save_raw:
@@ -164,10 +210,12 @@ def main():
         np.savez(
             raw_path,
             torques=torques.numpy(),
+            positions=positions.numpy(),
+            velocities=velocities.numpy(),
             joint_names=np.array(joint_names),
             checkpoint=resume_path,
         )
-        print(f"[INFO] Raw torque samples saved to: {raw_path}")
+        print(f"[INFO] Raw samples saved to: {raw_path}")
 
     # Isaac Sim (kit) hard-exits on shutdown without flushing Python's stdout
     # buffers, which would silently truncate the table above when stdout is
