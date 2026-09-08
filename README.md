@@ -35,6 +35,8 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
     ```bash
     conda activate env_isaaclab_sim5
     ./unitree_rl_lab.sh -i
+<!-- 建议确认当前环境安装的是本目录（`pip show unitree_rl_lab` 查看 Location），必要时在本目录重跑 `./unitree_rl_lab.sh -i` -->
+
     # restart your shell to activate the environment changes.
     ```
 - Download unitree robot description files
@@ -97,7 +99,13 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
 
 ### Torque Statistics (Motor Selection)
 
-`scripts/rsl_rl/record_torque_stats.py` runs a **trained checkpoint** in the play environment and records the per-joint actuator applied torque at every control step. It outputs three statistics per joint, which serve as a reference for motor selection:
+`scripts/rsl_rl/test_flat_walk.py` runs a **trained checkpoint** in the play environment and records the per-joint actuator applied torque at every control step (plus walking performance metrics). It outputs three statistics per joint, which serve as a reference for motor selection. The terrain used for the statistics is selected with `--terrain`:
+
+| `--terrain` | Terrain | Typical use |
+|---|---|---|
+| `flat` (default) | Forced pure flat terrain | Nominal (best-case) torque, baseline walking check |
+| `play` | Task's play env terrain as configured | Follows the play cfg automatically (e.g. after enabling complex sub-terrains in the play cfg) |
+| `complex` | Forced mixed rough terrain (slopes/stairs/boxes/rough), robots spawn on all difficulty rows | **Worst case** for motor selection |
 
 | Statistic | Meaning |
 |---|---|
@@ -108,35 +116,44 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
 **Usage:**
 
 ```bash
-# Explicit checkpoint:
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/record_torque_stats.py \
+# Flat terrain (nominal), explicit checkpoint:
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
     --task Unitree-Go2-Velocity \
     --checkpoint logs/rsl_rl/unitree_go2_velocity/<run>/model_7300.pt --steps 500
 
-# Automatically load the latest run / latest checkpoint:
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/record_torque_stats.py --task Unitree-Go2-Velocity
+# Worst-case torque statistics on complex terrain (recommended for motor selection):
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
+    --task Unitree-Go2-Velocity --terrain complex --steps 1000
+
+# Use the task's play env terrain as configured (also auto-loads the latest run/checkpoint):
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity --terrain play
+
+<!-- __将来改 play 配置为复杂地形时__：`TerrainImporterCfg` 的 `max_init_terrain_level` 默认是 1，`--terrain play` 模式下机器人只会出生在前两行（较易）。若希望 play 模式也覆盖难行，记得在 play cfg 中同步调高 `max_init_terrain_level`（`complex` 模式不受此影响，已内置处理）。 -->
 ```
+
+
 
 **Arguments:**
 
 | Argument | Default | Description |
 |---|---|---|
 | `--task` | `Unitree-Go2-Velocity` | Task name (e.g. `Unitree-G1-29dof-Velocity`, `Unitree-Go2-Velocity`). |
+| `--terrain` | `flat` | Terrain mode: `flat` / `play` / `complex` (see table above). |
 | `--num_envs` | 64 | Number of parallel play environments to simulate. |
-| `--steps` | 500 | Number of policy steps to record. |
+| `--steps` | 500 | Number of policy steps to record. Use 1000+ for complex terrain so robots actually reach the hard rows. |
 | `--warmup` | 50 | Initial discarded steps used to skip the settling transient after spawning. |
-| `--output` | `<checkpoint_dir>/torque_stats.csv` | Output CSV path (auto-named if omitted). |
+| `--output` | `<checkpoint_dir>/{flat_walk_stats,play_terrain_stats,complex_terrain_stats}.csv` per `--terrain` | Output CSV path (auto-named if omitted). |
 | `--save_raw` | off | Additionally save raw torque samples to a `.npz` file for further analysis. |
 | `--disable_fabric` | off | Disable fabric and use USD I/O operations. |
 | RSL-RL args | — | Standard arguments like `--experiment_name`, `--load_run`, `--checkpoint`. For example, to specify a particular run: add `--load_run 2026-08-31_23-22-03`. |
 
 **Output:**
 
-- A formatted table is printed to the console (per-joint peak/P99/RMS + pooled values).
-- A CSV file (`torque_stats.csv`) with columns `joint, peak_abs_torque_Nm, p99_abs_torque_Nm, rms_torque_Nm` is saved next to the checkpoint.
-- If `--save_raw` is set, raw samples are also saved to `<output_stem>_raw.npz` (keys: `torques`, `joint_names`, `checkpoint`).
+- A formatted table is printed to the console (per-joint peak/P99/RMS + pooled values) plus walking metrics (average forward velocity, average height, height variance).
+- A CSV file with columns `joint, peak_abs_torque_Nm, p99_abs_torque_Nm, rms_torque_Nm`, followed by walking metrics (including `terrain_mode`), is saved next to the checkpoint.
+- If `--save_raw` is set, raw samples are also saved to `<output_stem>_raw.npz` (keys: `torques`, `positions`, `velocities`, `joint_names`, `checkpoint`).
 
-> **Note:** This script only supports manager-based RL environments and requires a previously trained checkpoint under `logs/rsl_rl/<experiment_name>/`. It uses the *play* environment configuration (`play_env_cfg_entry_point`) with no terrain curriculum.
+> **Note:** This script only supports manager-based RL environments and requires a previously trained checkpoint under `logs/rsl_rl/<experiment_name>/`. It uses the *play* environment configuration (`play_env_cfg_entry_point`). In `complex` mode, robots are spawned on all terrain difficulty rows (`max_init_terrain_level = num_rows - 1`).
 
 > **故障排查：控制台只显示部分关节的力矩表格**
 >
@@ -148,7 +165,7 @@ conda run -n env_isaaclab_sim5 python scripts/rsl_rl/record_torque_stats.py --ta
 >
 > 解决（二选一）：
 > 1. 脚本已在结果打印结束后显式 `sys.stdout.flush()`，直接重新运行即可；
-> 2. 或运行时加 `-u` 关闭缓冲：`python -u scripts/rsl_rl/record_torque_stats.py ...`。
+> 2. 或运行时加 `-u` 关闭缓冲：`python -u scripts/rsl_rl/test_flat_walk.py ...`。
 
 ### 验证训练结果
 
@@ -178,7 +195,7 @@ conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py --task Un
 
 #### 2. 复杂地形测试
 
-使用 `play.py` 在复杂地形上测试策略：
+使用 `play.py` 在 play 配置地形上目视检查策略：
 
 ```bash
 # 在复杂地形上测试
@@ -190,13 +207,22 @@ conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-Go2-
 - 是否能适应不同地形
 - 步态是否自然
 
-#### 3. 力矩统计分析
-
-使用 `record_torque_stats.py` 分析关节力矩，为电机选型提供参考：
+定量测试用 `test_flat_walk.py --terrain complex`（混合粗糙地形：坡/台阶/方格/随机粗糙，机器人出生在所有难度行，覆盖最坏工况）：
 
 ```bash
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/record_torque_stats.py \
-    --task Unitree-Go2-Velocity --steps 1000
+# 复杂地形行走性能 + 各关节力矩（最坏工况）
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
+    --task Unitree-Go2-Velocity --terrain complex --steps 1000
+```
+
+#### 3. 力矩统计分析
+
+使用 `test_flat_walk.py` 分析关节力矩，为电机选型提供参考（电机选型建议用最坏工况 `--terrain complex`；`--terrain flat` 为平地名义工况，`--terrain play` 跟随 play 配置地形）：
+
+```bash
+# 最坏工况关节力矩（推荐用于电机选型）
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
+    --task Unitree-Go2-Velocity --terrain complex --steps 1000
 ```
 
 #### 4. TensorBoard 监控
@@ -217,8 +243,9 @@ tensorboard --logdir logs/rsl_rl/
 
 - [ ] 平地行走稳定，无明显晃动
 - [ ] 速度跟踪准确，能达到目标速度
-- [ ] 关节力矩在电机额定范围内
+- [ ] 平地力矩（`--terrain flat`）在电机额定范围内
 - [ ] 复杂地形适应性良好
+- [ ] 复杂地形力矩（`--terrain complex`）在电机额定范围内，峰值扭矩留 1.5-2.0x 安全余量
 - [ ] 步态自然，无异常动作
 
 ### Geesun Dog 导入与全关节运动演示（dog1）
