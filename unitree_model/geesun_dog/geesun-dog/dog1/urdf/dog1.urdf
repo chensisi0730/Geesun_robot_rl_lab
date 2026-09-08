@@ -63,10 +63,22 @@
     <visual>
       <origin
         xyz="0 0 0"
-        rpy="0 0 0" />
+        rpy="0 1.57 0" />
       <geometry>
-        <mesh
-          filename="package://dog1/meshes/Link_fr_hip.STL" />
+        <cylinder length="0.25" radius="0.05" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <visual>
+      <origin
+        xyz="0.08 -0.05 0"
+        rpy="1.57 0 0" />
+      <geometry>
+        <cylinder length="0.09" radius="0.05" />
       </geometry>
       <material
         name="">
@@ -77,10 +89,17 @@
     <collision>
       <origin
         xyz="0 0 0"
-        rpy="0 0 0" />
+        rpy="0 1.57 0" />
       <geometry>
-        <mesh
-          filename="package://dog1/meshes/Link_fr_hip.STL" />
+        <cylinder length="0.25" radius="0.05" />
+      </geometry>
+    </collision>
+     <collision>
+      <origin
+        xyz="0.08 -0.05 0"
+        rpy="1.57 0 0" />
+      <geometry>
+        <cylinder length="0.09" radius="0.05" />
       </geometry>
     </collision>
   </link>
@@ -97,8 +116,8 @@
     <axis
       xyz="1 0 0" />
     <limit
-      lower="0"
-      upper="0"
+      lower="-1.0471975511965976"
+      upper="1.0471975511965976"
       effort="0"
       velocity="0" />
   </joint>
@@ -153,10 +172,10 @@
     <child
       link="Link_fr_thigh" />
     <axis
-      xyz="0 0.99947 0.032517" />
+      xyz="0 1 0" />
     <limit
-      lower="0"
-      upper="0"
+      lower="-1.57"
+      upper="3.49"
       effort="0"
       velocity="0" />
   </joint>
@@ -211,10 +230,10 @@
     <child
       link="Link_fr_calf" />
     <axis
-      xyz="0 0.99947 0.032517" />
+      xyz="0 1 0" />
     <limit
-      lower="0"
-      upper="0"
+      lower="-0.8377580409572781"
+      upper="1.0471975511965976"
       effort="0"
       velocity="0" />
   </joint>
@@ -237,10 +256,22 @@
     <visual>
       <origin
         xyz="0 0 0"
-        rpy="0 0 0" />
+        rpy="0 1.57 0" />
       <geometry>
-        <mesh
-          filename="package://dog1/meshes/Link_fl_hip.STL" />
+        <cylinder length="0.25" radius="0.05" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <visual>
+      <origin
+        xyz="0.08 0.05 0"
+        rpy="1.57 0 0" />
+      <geometry>
+        <cylinder length="0.09" radius="0.05" />
       </geometry>
       <material
         name="">
@@ -251,10 +282,17 @@
     <collision>
       <origin
         xyz="0 0 0"
-        rpy="0 0 0" />
+        rpy="0 1.57 0" />
       <geometry>
-        <mesh
-          filename="package://dog1/meshes/Link_fl_hip.STL" />
+        <cylinder length="0.25" radius="0.05" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin
+        xyz="0.08 0.05 0"
+        rpy="1.57 0 0" />
+      <geometry>
+        <cylinder length="0.09" radius="0.05" />
       </geometry>
     </collision>
   </link>
@@ -271,8 +309,8 @@
     <axis
       xyz="1 0 0" />
     <limit
-      lower="0"
-      upper="0"
+      lower="-1.0471975511965976"
+      upper="1.0471975511965976"
       effort="0"
       velocity="0" />
   </joint>
@@ -327,10 +365,10 @@
     <child
       link="Link_fl_thigh" />
     <axis
-      xyz="0 -1 0" />
+      xyz="0 1 0" />
     <limit
-      lower="0"
-      upper="0"
+      lower="-1.3439035240356338"
+      upper="3.717551306747922"
       effort="0"
       velocity="0" />
   </joint>
@@ -385,10 +423,10 @@
     <child
       link="Link_fl_calf" />
     <axis
-      xyz="0 -1 0" />
+      xyz="0 1 0" />
     <limit
-      lower="0"
-      upper="0"
+      lower="-0.19198621771937624"
+      upper="1.6929693744344996"
       effort="0"
       velocity="0" />
   </joint>
@@ -411,10 +449,22 @@
     <visual>
       <origin
         xyz="0 0 0"
-        rpy="0 0 0" />
+        rpy="0 1.57 0" />
       <geometry>
-        <mesh
-          filename="package://dog1/meshes/Link_hl_hip.STL" />
+        <cylinder length="0.25" radius="0.05" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <visual>
+      <origin
+        xyz="-0.08 0.05 0"
+        rpy="1.57 0 0" />
+      <geometry>
+        <cylinder length="0.09" radius="0.05" />
       </geometry>
       <material
         name="">
@@ -425,10 +475,17 @@
     <collision>
       <origin
         xyz="0 0 0"
-        rpy="0 0 0" />
+        rpy="0 1.57 0" />
       <geometry>
-        <mesh
-          filename="package://dog1/meshes/Link_hl_hip.STL" />
+        <cylinder length="0.25" radius="0.05" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin
+        xyz="-0.08 0.05 0"
+        rpy="1.57 0 0" />
+      <geometry>
+        <cylinder length="0.09" radius="0.05" />
       </geometry>
     </collision>
   </link>
@@ -443,10 +500,10 @@
     <child
       link="Link_hl_hip" />
     <axis
-      xyz="-1 0 0" />
+      xyz="1 0 0" />
     <limit
-      lower="0"
-      upper="0"
+      lower="-1.0471975511965976"
+      upper="1.0471975511965976"
       effort="0"
       velocity="0" />
   </joint>
@@ -501,10 +558,10 @@
     <child
       link="Link_hl_thigh" />
     <axis
-      xyz="0 -1 0" />
+      xyz="0 1 0" />
     <limit
-      lower="0"
-      upper="0"
+      lower="-0.7504915783575616"
+      upper="4.310963252425994"
       effort="0"
       velocity="0" />
   </joint>
@@ -559,10 +616,10 @@
     <child
       link="Link_hl_calf" />
     <axis
-      xyz="0 -1 0" />
+      xyz="0 1 0" />
     <limit
-      lower="0"
-      upper="0"
+      lower="-0.13962634015954636"
+      upper="1.7453292519943295"
       effort="0"
       velocity="0" />
   </joint>
@@ -585,10 +642,22 @@
     <visual>
       <origin
         xyz="0 0 0"
-        rpy="0 0 0" />
+        rpy="0 1.57 0" />
       <geometry>
-        <mesh
-          filename="package://dog1/meshes/Link_hr_hip.STL" />
+        <cylinder length="0.25" radius="0.05" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <visual>
+      <origin
+        xyz="-0.08 -0.05 0"
+        rpy="1.57 0 0" />
+      <geometry>
+        <cylinder length="0.09" radius="0.05" />
       </geometry>
       <material
         name="">
@@ -599,10 +668,17 @@
     <collision>
       <origin
         xyz="0 0 0"
-        rpy="0 0 0" />
+        rpy="0 1.57 0" />
       <geometry>
-        <mesh
-          filename="package://dog1/meshes/Link_hr_hip.STL" />
+        <cylinder length="0.25" radius="0.05" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin
+        xyz="-0.08 -0.05 0"
+        rpy="1.57 0 0" />
+      <geometry>
+        <cylinder length="0.09" radius="0.05" />
       </geometry>
     </collision>
   </link>
@@ -617,10 +693,10 @@
     <child
       link="Link_hr_hip" />
     <axis
-      xyz="-1 0 0" />
+      xyz="1 0 0" />
     <limit
-      lower="0"
-      upper="0"
+      lower="-1.0471975511965976"
+      upper="1.0471975511965976"
       effort="0"
       velocity="0" />
   </joint>
@@ -677,8 +753,8 @@
     <axis
       xyz="0 1 0" />
     <limit
-      lower="0"
-      upper="0"
+      lower="-0.7853981633974483"
+      upper="4.276056667386107"
       effort="0"
       velocity="0" />
   </joint>
@@ -735,8 +811,8 @@
     <axis
       xyz="0 1 0" />
     <limit
-      lower="0"
-      upper="0"
+      lower="0.20943951023931953"
+      upper="2.0943951023931953"
       effort="0"
       velocity="0" />
   </joint>
