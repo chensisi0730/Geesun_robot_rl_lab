@@ -78,3 +78,28 @@ datasets
 
 # Local model download archive (large generated file)
 unitree_model.zip
+unitree_model/.gitattributes
+unitree_model/README.md
+unitree_model/H1-2/h1_2_handless/.asset_hash
+unitree_model/H1-2/h1_2_handless/config.yaml
+unitree_model/geesun_dog/geesun-dog/dog1/结构.png
+unitree_model/geesun_dog/geesun-dog/dog1/CMakeLists.txt
+unitree_model/geesun_dog/geesun-dog/dog1/package.xml
+unitree_model/geesun_dog/geesun-dog/dog1/config/joint_names_dog1.yaml
+unitree_model/geesun_dog/geesun-dog/dog1/launch/display.launch
+unitree_model/geesun_dog/geesun-dog/dog1/launch/gazebo.launch
+unitree_model/geesun_dog/geesun-dog/dog1/meshes/base_link.STL
+unitree_model/geesun_dog/geesun-dog/dog1/meshes/Link_fl_calf.STL
+unitree_model/geesun_dog/geesun-dog/dog1/meshes/Link_fl_hip.STL
+unitree_model/geesun_dog/geesun-dog/dog1/meshes/Link_fl_thigh.STL
+unitree_model/geesun_dog/geesun-dog/dog1/meshes/Link_fr_calf.STL
+unitree_model/geesun_dog/geesun-dog/dog1/meshes/Link_fr_hip.STL
+unitree_model/geesun_dog/geesun-dog/dog1/meshes/Link_fr_thigh.STL
+unitree_model/geesun_dog/geesun-dog/dog1/meshes/Link_hl_calf.STL
+unitree_model/geesun_dog/geesun-dog/dog1/meshes/Link_hl_hip.STL
+unitree_model/geesun_dog/geesun-dog/dog1/meshes/Link_hl_thigh.STL
+unitree_model/geesun_dog/geesun-dog/dog1/meshes/Link_hr_calf.STL
+unitree_model/geesun_dog/geesun-dog/dog1/meshes/Link_hr_hip.STL
+unitree_model/geesun_dog/geesun-dog/dog1/meshes/Link_hr_thigh.STL
+unitree_model/geesun_dog/geesun-dog/dog1/urdf/dog1.csv
+unitree_model/geesun_dog/geesun-dog/dog1/urdf/dog1.urdf
