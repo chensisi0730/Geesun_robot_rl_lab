@@ -6,154 +6,179 @@
 [![Discord](https://img.shields.io/badge/-Discord-5865F2?style=flat&logo=Discord&logoColor=white)](https://discord.gg/ZwcVwxv5rq)
 
 
-## Overview
+## 项目概述
 
-This project provides a set of reinforcement learning environments for Unitree robots, built on top of [IsaacLab](https://github.com/isaac-sim/IsaacLab).
+本项目基于 [IsaacLab](https://github.com/isaac-sim/IsaacLab) 提供一套 Unitree 机器人的强化学习环境。
 
-Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
+当前支持 Unitree **Go2**、**H1** 和 **G1-29dof** 机器人。
 
 <div align="center">
 
-| <div align="center"> Isaac Lab </div> | <div align="center">  Mujoco </div> |  <div align="center"> Physical </div> |
+| <div align="center"> Isaac Lab 仿真 </div> | <div align="center">  Mujoco 仿真 </div> |  <div align="center"> 实机 </div> |
 |--- | --- | --- |
 | [<img src="https://oss-global-cdn.unitree.com/static/d879adac250648c587d3681e90658b49_480x397.gif" width="240px">](g1_sim.gif) | [<img src="https://oss-global-cdn.unitree.com/static/3c88e045ab124c3ab9c761a99cb5e71f_480x397.gif" width="240px">](g1_mujoco.gif) | [<img src="https://oss-global-cdn.unitree.com/static/6c17c6cf52ec4e26bbfab1fbf591adb2_480x270.gif" width="240px">](g1_real.gif) |
 
 </div>
 
-## Installation
+## 目录
 
-- Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
-- Install the Unitree RL IsaacLab standalone environments.
+- [项目概述](#项目概述)
+- [安装](#安装)
+- [策略测试与力矩统计](#策略测试与力矩统计)
+- [验证训练结果](#验证训练结果)
+- [Geesun Dog 导入与全关节运动演示（dog1）](#geesun-dog-导入与全关节运动演示dog1)
+- [部署](#部署)
+- [致谢](#致谢)
 
-  - Clone or copy this repository separately from the Isaac Lab installation (i.e. outside the `IsaacLab` directory):
+## 安装
+
+- 按照[安装指南](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html)安装 Isaac Lab。
+- 安装 Unitree RL 的 IsaacLab 独立环境。
+
+  - 将本仓库克隆或复制到 Isaac Lab 安装目录之外（即不要放在 `IsaacLab` 目录内部）：
 
     ```bash
     git clone https://github.com/unitreerobotics/unitree_rl_lab.git
     ```
-  - Use a python interpreter that has Isaac Lab installed, install the library in editable mode using:
+  - 使用已安装 Isaac Lab 的 Python 解释器，以可编辑（editable）模式安装本库：
 
     ```bash
     conda activate env_isaaclab_sim5
     ./unitree_rl_lab.sh -i
-<!-- 建议确认当前环境安装的是本目录（`pip show unitree_rl_lab` 查看 Location），必要时在本目录重跑 `./unitree_rl_lab.sh -i` -->
-
-    # restart your shell to activate the environment changes.
+    # 重启 shell 以使环境变更生效。
     ```
-- Download unitree robot description files
 
-  *Method 1: Using USD Files*
-  - Download unitree usd files from [unitree_model](https://huggingface.co/datasets/unitreerobotics/unitree_model/tree/main), keeping folder structure
+    若仓库路径发生变化，请在当前仓库目录重新执行 `./unitree_rl_lab.sh -i`，
+    并用 `pip show unitree_rl_lab` 确认 `Location` 指向本仓库的 `source/unitree_rl_lab`。
+- 下载 Unitree 机器人描述文件
+
+  *方法一：使用 USD 文件*
+  - 从 [unitree_model](https://huggingface.co/datasets/unitreerobotics/unitree_model/tree/main) 下载 unitree USD 文件，保持原有目录结构
     ```bash
     git clone https://huggingface.co/datasets/unitreerobotics/unitree_model
     ```
-  - Config `UNITREE_MODEL_DIR` in `source/unitree_rl_lab/unitree_rl_lab/assets/robots/unitree.py`.
+  - 在 `source/unitree_rl_lab/unitree_rl_lab/assets/robots/unitree.py` 中配置 `UNITREE_MODEL_DIR`。
 
     ```bash
     UNITREE_MODEL_DIR = "</home/user/projects/unitree_usd>"
     ```
 
-  *Method 2: Using URDF Files [Recommended]* Only for Isaacsim >= 5.0
-  -  Download unitree robot urdf files from [unitree_ros](https://github.com/unitreerobotics/unitree_ros)
+  *方法二：使用 URDF 文件（推荐）* 仅适用于 Isaac Sim >= 5.0
+  -  从 [unitree_ros](https://github.com/unitreerobotics/unitree_ros) 下载 unitree 机器人 URDF 文件
       ```
       git clone https://github.com/unitreerobotics/unitree_ros.git
       ```
-  - Config `UNITREE_ROS_DIR` in `source/unitree_rl_lab/unitree_rl_lab/assets/robots/unitree.py`.
+  - 在 `source/unitree_rl_lab/unitree_rl_lab/assets/robots/unitree.py` 中配置 `UNITREE_ROS_DIR`。
     ```bash
     UNITREE_ROS_DIR = "</home/user/projects/unitree_ros/unitree_ros>"
     ```
-  - [Optional]: change *robot_cfg.spawn* if you want to use urdf files
+  - [可选]：如需使用 URDF 文件，请修改 *robot_cfg.spawn*
 
 
 
-- Verify that the environments are correctly installed by:
+- 通过以下方式验证环境已正确安装：
 
-  - Listing the available tasks:
-
-    ```bash
-    ./unitree_rl_lab.sh -l # This is a faster version than isaaclab
-    ```
-  - Running a task:
-    g1: 平地  2026-07-08_14-09-16
-    GO2：平地 unitree_go2_velocity/2026-07-08_21-46-54
+  - 列出可用任务：
 
     ```bash
-    ./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity # support for autocomplete task-name
-    # same as
-    conda run -n env_isaaclab_sim5  python scripts/rsl_rl/train.py --headless --task Unitree-G1-29dof-Velocity --num_envs 12000 --resume  --load_run 2026-07-21_13-42-56
-
-    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/train.py --headless --task Unitree-Go2-Velocity --num_envs 12000 --resume
-    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/train.py --headless --task Unitree-GeesunDog-Velocity --num_envs 12000
-    
-    tensorboard --logdir logs/rsl_rl/
-
+    ./unitree_rl_lab.sh -l # 比 isaaclab 启动更快
     ```
-  - Inference with a trained agent:
+  - 训练 GO2 复杂地形行走策略：
 
     ```bash
-    ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity # support for autocomplete task-name
-    # same as
-    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-G1-29dof-Velocity
-    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-Go2-Velocity   --load_run 2026-08-31_23-22-03
-    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-GeesunDog-Velocity
+    set -o pipefail
+
+    # GO2 复杂地形训练，新建训练运行
+    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/train.py --headless \
+        --task Unitree-Go2-Velocity --num_envs 12000 2>&1 | tee /tmp/train_go2.log
+
+    # 从已有运行继续训练时，再添加 --resume 和 --load_run
+    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/train.py --headless \
+        --task Unitree-Go2-Velocity --num_envs 12000 \
+        --resume --load_run RUN_ID 2>&1 | tee /tmp/train_go2_resume.log
     ```
 
-### Torque Statistics (Motor Selection)
+    训练日志和 checkpoint 默认保存在 `logs/rsl_rl/unitree_go2_velocity/`。
+    新建训练时不要添加 `--resume`；只有从已有运行继续训练时才使用
+    `--resume --load_run RUN_ID`，其中 `RUN_ID` 替换为实际运行目录名。
+    如需实时查看日志，请在另一个终端执行
+    `tail -f /tmp/train_go2.log` 或 `tail -f /tmp/train_go2_resume.log`。
+    当前 GO2 的 `height_scanner` 仍保留用于后续消融，但没有接入 policy/critic 观测；
+    如需完全关闭传感器，还需移除场景传感器及其 `update_period` 配置。
 
-`scripts/rsl_rl/test_flat_walk.py` runs a **trained checkpoint** in the play environment and records the per-joint actuator applied torque at every control step (plus walking performance metrics). It outputs three statistics per joint, which serve as a reference for motor selection. The terrain used for the statistics is selected with `--terrain`:
+  - 回放训练好的 GO2 策略：
 
-| `--terrain` | Terrain | Typical use |
+    ```bash
+    ./unitree_rl_lab.sh -p --task Unitree-Go2-Velocity --load_run RUN_ID
+
+
+    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py \
+        --task Unitree-Go2-Velocity
+    ```
+
+## 策略测试与力矩统计
+
+`scripts/rsl_rl/test_flat_walk.py` 使用训练好的 checkpoint 进行定量测试，并记录行走指标和每个关节的执行器力矩。通过 `--terrain` 选择测试地形：
+
+| `--terrain` | 地形 | 用途 |
 |---|---|---|
-| `flat` (default) | Forced pure flat terrain | Nominal (best-case) torque, baseline walking check |
-| `play` | Task's play env terrain as configured | Follows the play cfg automatically (e.g. after enabling complex sub-terrains in the play cfg) |
-| `complex` | Forced mixed rough terrain (slopes/stairs/boxes/rough), robots spawn on all difficulty rows | **Worst case** for motor selection |
+| `flat`（默认） | 强制使用纯平地 | 平地基线和名义工况力矩 |
+| `play` | 使用任务的 play 配置 | 检查回放配置中的地形 |
+| `complex` | 强制使用混合复杂地形，并覆盖全部难度层级 | 复杂地形行走和力矩压力测试 |
 
-| Statistic | Meaning |
+| 指标 | 含义 |
 |---|---|
-| `Peak \|tau\|` | Max absolute torque over all samples — use with a 1.5-2.0x safety margin to select peak (peak/short-time) torque. |
-| `P99 \|tau\|` | 99th percentile of absolute torque — robust against rare spikes, closer to sustained worst-case load. |
-| `RMS` | Root-mean-square torque — compare against motor continuous/thermal rating. |
+| `Peak \|tau\|` | 所有样本中的最大绝对力矩，用于峰值力矩评估；选型时建议保留 1.5-2.0 倍安全余量。 |
+| `P99 \|tau\|` | 绝对力矩的 99% 分位值，比峰值更不容易受偶发尖峰影响。 |
+| `RMS` | 均方根力矩，用于和电机持续/热力矩能力比较。 |
 
-**Usage:**
+**用法：**
 
 ```bash
-# Flat terrain (nominal), explicit checkpoint:
+# 平地名义工况，自动加载最新 checkpoint
 conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
     --task Unitree-Go2-Velocity \
-    --checkpoint logs/rsl_rl/unitree_go2_velocity/<run>/model_7300.pt --steps 500
+    --terrain flat \
+    --steps 500
 
-# Worst-case torque statistics on complex terrain (recommended for motor selection):
+# 指定 checkpoint 时，将 RUN_ID 和 checkpoint 文件名替换为实际值
 conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
-    --task Unitree-Go2-Velocity --terrain complex --steps 1000
+    --task Unitree-Go2-Velocity \
+    --terrain flat \
+    --checkpoint logs/rsl_rl/unitree_go2_velocity/RUN_ID/model_7300.pt \
+    --steps 500
 
-# Use the task's play env terrain as configured (also auto-loads the latest run/checkpoint):
+# 复杂地形压力测试，推荐用于电机选型参考
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
+    --task Unitree-Go2-Velocity \
+    --terrain complex \
+    --steps 1000
+
+# 使用任务的 play 配置地形，省略 checkpoint 时自动选择最新结果
 conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity --terrain play
-
-<!-- __将来改 play 配置为复杂地形时__：`TerrainImporterCfg` 的 `max_init_terrain_level` 默认是 1，`--terrain play` 模式下机器人只会出生在前两行（较易）。若希望 play 模式也覆盖难行，记得在 play cfg 中同步调高 `max_init_terrain_level`（`complex` 模式不受此影响，已内置处理）。 -->
 ```
 
+**参数：**
 
-
-**Arguments:**
-
-| Argument | Default | Description |
+| 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--task` | `Unitree-Go2-Velocity` | Task name (e.g. `Unitree-G1-29dof-Velocity`, `Unitree-Go2-Velocity`). |
-| `--terrain` | `flat` | Terrain mode: `flat` / `play` / `complex` (see table above). |
-| `--num_envs` | 64 | Number of parallel play environments to simulate. |
-| `--steps` | 500 | Number of policy steps to record. Use 1000+ for complex terrain so robots actually reach the hard rows. |
-| `--warmup` | 50 | Initial discarded steps used to skip the settling transient after spawning. |
-| `--output` | `<checkpoint_dir>/{flat_walk_stats,play_terrain_stats,complex_terrain_stats}.csv` per `--terrain` | Output CSV path (auto-named if omitted). |
-| `--save_raw` | off | Additionally save raw torque samples to a `.npz` file for further analysis. |
-| `--disable_fabric` | off | Disable fabric and use USD I/O operations. |
-| RSL-RL args | — | Standard arguments like `--experiment_name`, `--load_run`, `--checkpoint`. For example, to specify a particular run: add `--load_run 2026-08-31_23-22-03`. |
+| `--task` | `Unitree-Go2-Velocity` | 任务名称。 |
+| `--terrain` | `flat` | `flat`、`play` 或 `complex`。 |
+| `--num_envs` | 64 | 并行环境数量。 |
+| `--steps` | 500 | 采样的策略步数；复杂地形建议使用 1000 或更多。 |
+| `--warmup` | 50 | 丢弃的初始步数，用于跳过出生后的稳定过程。 |
+| `--output` | 依地形模式自动命名 | 输出 CSV 路径。 |
+| `--save_raw` | 关闭 | 额外保存原始样本 `.npz` 文件。 |
+| `--disable_fabric` | 关闭 | 禁用 Fabric，改用 USD I/O。 |
+| RSL-RL 参数 | - | 可使用 `--load_run`、`--checkpoint` 等参数指定模型。 |
 
-**Output:**
+**输出：**
 
-- A formatted table is printed to the console (per-joint peak/P99/RMS + pooled values) plus walking metrics (average forward velocity, average height, height variance).
-- A CSV file with columns `joint, peak_abs_torque_Nm, p99_abs_torque_Nm, rms_torque_Nm`, followed by walking metrics (including `terrain_mode`), is saved next to the checkpoint.
-- If `--save_raw` is set, raw samples are also saved to `<output_stem>_raw.npz` (keys: `torques`, `positions`, `velocities`, `joint_names`, `checkpoint`).
+- 控制台打印每个关节及汇总的 Peak/P99/RMS，以及平均前进速度、平均高度和高度方差。
+- CSV 文件保存到 checkpoint 所在目录，包含关节力矩统计和 `terrain_mode`、平均速度、高度等行走指标。
+- 添加 `--save_raw` 时，额外保存 `<output_stem>_raw.npz`，包含 `torques`、`positions`、`velocities`、`joint_names` 和 `checkpoint`。
 
-> **Note:** This script only supports manager-based RL environments and requires a previously trained checkpoint under `logs/rsl_rl/<experiment_name>/`. It uses the *play* environment configuration (`play_env_cfg_entry_point`). In `complex` mode, robots are spawned on all terrain difficulty rows (`max_init_terrain_level = num_rows - 1`).
+> **说明：** 脚本只支持 manager-based RL 环境，需要已有训练 checkpoint。默认使用任务的 `play_env_cfg_entry_point`；`complex` 模式会覆盖为混合复杂地形，并让机器人覆盖全部难度层级。
 
 > **故障排查：控制台只显示部分关节的力矩表格**
 >
@@ -167,88 +192,100 @@ conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py --task Un
 > 1. 脚本已在结果打印结束后显式 `sys.stdout.flush()`，直接重新运行即可；
 > 2. 或运行时加 `-u` 关闭缓冲：`python -u scripts/rsl_rl/test_flat_walk.py ...`。
 
-### 验证训练结果
+## 验证训练结果
 
-训练完成后，需要验证策略在不同地形上的性能。以下是验证步骤：
+训练完成后，建议先目视回放，再进行平地和复杂地形定量测试。
 
-#### 1. 平地行走测试
+### 1. 复杂地形回放
 
-使用 `test_flat_walk.py` 脚本在纯平地形上测试策略：
-
-```bash
-# 测试 Go2 在平地上的行走性能
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
-    --task Unitree-Go2-Velocity \
-    --checkpoint logs/rsl_rl/unitree_go2_velocity/<run>/model_7300.pt --steps 500
-
-# 或自动加载最新训练结果
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity
-```
-
-**输出指标：**
-- 平均前进速度（m/s）
-- 平均高度（m）
-- 高度方差（m²）- 衡量行走稳定性
-- 各关节力矩统计（峰值、P99、RMS）
-
-> 若控制台的力矩表格只显示部分关节（如 8 个），属于 Isaac Sim 硬退出导致 stdout 缓冲未刷新的显示问题，CSV 数据是完整的；脚本已加 `sys.stdout.flush()` 修复，详见上文故障排查说明。
-
-#### 2. 复杂地形测试
-
-使用 `play.py` 在 play 配置地形上目视检查策略：
+使用 `play.py` 检查策略在任务 play 配置中的实际表现：
 
 ```bash
-# 在复杂地形上测试
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py --task Unitree-Go2-Velocity --load_run <run_id>
+# 自动选择最新 checkpoint
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py \
+    --task Unitree-Go2-Velocity
+
+# 或指定训练运行目录
+conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py \
+    --task Unitree-Go2-Velocity --load_run RUN_ID
 ```
 
-**观察要点：**
+观察要点：
 - 机器人能否稳定行走
 - 是否能适应不同地形
 - 步态是否自然
+- 是否出现侧翻、摔倒或明显打滑
 
-定量测试用 `test_flat_walk.py --terrain complex`（混合粗糙地形：坡/台阶/方格/随机粗糙，机器人出生在所有难度行，覆盖最坏工况）：
+### 2. 定量行走与力矩测试
 
 ```bash
-# 复杂地形行走性能 + 各关节力矩（最坏工况）
+# 平地基线
 conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
-    --task Unitree-Go2-Velocity --terrain complex --steps 1000
-```
+    --task Unitree-Go2-Velocity \
+    --terrain flat \
+    --steps 500
 
-#### 3. 力矩统计分析
-
-使用 `test_flat_walk.py` 分析关节力矩，为电机选型提供参考（电机选型建议用最坏工况 `--terrain complex`；`--terrain flat` 为平地名义工况，`--terrain play` 跟随 play 配置地形）：
-
-```bash
-# 最坏工况关节力矩（推荐用于电机选型）
+# 复杂地形压力测试
 conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
-    --task Unitree-Go2-Velocity --terrain complex --steps 1000
+    --task Unitree-Go2-Velocity \
+    --terrain complex \
+    --steps 1000
 ```
 
-#### 4. TensorBoard 监控
+检查平均前进速度、高度方差、摔倒情况和各关节 Peak/P99/RMS 力矩。电机选型时，以 `complex` 结果为主要参考，并为峰值力矩预留 1.5-2.0 倍安全余量。
 
-训练过程中使用 TensorBoard 监控关键指标：
+上述命令默认自动加载最新 checkpoint。指定模型时，增加：
+`--checkpoint logs/rsl_rl/unitree_go2_velocity/RUN_ID/model_7300.pt`。
+
+### 3. TensorBoard
 
 ```bash
-tensorboard --logdir logs/rsl_rl/
+tensorboard --logdir logs/rsl_rl/unitree_go2_velocity
 ```
 
-**关键指标：**
-- `rewards/track_lin_vel_xy`: 速度跟踪奖励
-- `rewards/track_ang_vel_z`: 角速度跟踪奖励
-- `losses/policy_loss`: 策略损失
-- `losses/value_loss`: 价值损失
+重点观察以下实际标签：
 
-#### 5. 验证清单
+- `Train/mean_reward`、`Train/mean_episode_length`
+- `Episode_Reward/track_lin_vel_xy`、`Episode_Reward/track_ang_vel_z`
+- `Metrics/base_velocity/error_vel_xy`、`Metrics/base_velocity/error_vel_yaw`
+- `Curriculum/terrain_levels`、`Curriculum/lin_vel_cmd_levels`
+- `Episode_Termination/time_out`、`Episode_Termination/bad_orientation`
+- `Loss/value_function`、`Loss/surrogate`、`Policy/mean_noise_std`
+
+判断时使用训练后期的滑动平均，不要只看单个尖峰。通常应同时满足：episode 长度接近上限、`time_out` 占比稳定且较高、
+`bad_orientation` 较低，速度误差总体下降，课程等级在达到当前能力上限后保持稳定，损失没有持续发散。
+修改 curriculum 后，旧 TensorBoard 运行只能用于对照；应重新训练或从头启动一个新运行，确认新的速度课程不会过早解锁。
+如果训练因 Isaac Sim 异常退出，最后一个 checkpoint 只能作为候选模型，不能直接作为最终验收模型。
+
+### 4. 训练日志检查（PhysX Overflow）
+
+`Patch buffer overflow` 没有 TensorBoard 标签，训练日志是唯一观察渠道。该错误表示 PhysX GPU
+碰撞管线（narrowphase）patch 池耗尽——与显存剩余量无关，空闲显存也可能触发；超出的碰撞对
+会被静默跳过，个别 env 可能出现穿地/丢接触，污染训练数据。
+
+```bash
+# 训练日志 overflow 计数应为 0（v3 历史值为 98145，可作为异常量级参考）
+grep -c 'Patch buffer overflow' /tmp/train_go2.log
+```
+
+- 计数为 0：物理管线健康；
+- 计数 > 0 且逐物理步重复打印：该 run 的数据不可用于验收，需降低 `num_envs` 或
+  简化地形碰撞网格后重新训练（见 `doc/training_monitoring.md` §3.1/§3.5）；
+- 监控脚本（`scripts/monitor_tb_check.py`，每 4h 一轮）发现**新增** overflow 行会立即终止
+  训练进程组（SIGTERM→SIGKILL）并抑制自动 resume，直到人工重启新 run 后标记自动清除
+  （机制见 `doc/training_monitoring.md`）。
+
+### 5. 验收清单
 
 - [ ] 平地行走稳定，无明显晃动
-- [ ] 速度跟踪准确，能达到目标速度
-- [ ] 平地力矩（`--terrain flat`）在电机额定范围内
-- [ ] 复杂地形适应性良好
-- [ ] 复杂地形力矩（`--terrain complex`）在电机额定范围内，峰值扭矩留 1.5-2.0x 安全余量
+- [ ] 复杂地形上能持续前进
+- [ ] 速度跟踪没有明显退化
+- [ ] 摔倒率在可接受范围内
+- [ ] 复杂地形下力矩没有异常峰值
 - [ ] 步态自然，无异常动作
+- [ ] 训练日志无 PhysX Patch buffer overflow（计数为 0）
 
-### Geesun Dog 导入与全关节运动演示（dog1）
+## Geesun Dog 导入与全关节运动演示（dog1）
 
 `scripts/geesun_dog/move_geesun_dog.py` 将自研 Geesun 四足机器人（`unitree_model/geesun_dog/geesun-dog/dog1/urdf/dog1.urdf`，4 条腿 x hip/thigh/calf 共 12 个关节）导入 Isaac Sim，并以对角步态（trot）正弦曲线驱动全部关节运动，便于直观检查整条运动链。
 
@@ -298,66 +335,66 @@ tensorboard --logdir logs/rsl_rl/
 
 > **注意：** 若关节位置冻结在固定姿态，说明腿与地面或彼此卡死——可在脚本中调高基座高度（`default_root[0, 2]`）或减小 `--amp_deg`。
 
-## Deploy
+## 部署
 
-After the model training is completed, we need to perform sim2sim on the trained strategy in Mujoco to test the performance of the model.
-Then deploy sim2real.
+模型训练完成后，需要在 Mujoco 中对训练好的策略进行 sim2sim 仿真测试，以检验模型性能。
+然后再进行 sim2real 实机部署。
 
-### Setup
+### 环境准备
 
 ```bash
-# Install dependencies
+# 安装依赖
 sudo apt install -y libyaml-cpp-dev libboost-all-dev libeigen3-dev libspdlog-dev libfmt-dev
-# Install unitree_sdk2
+# 安装 unitree_sdk2
 git clone git@github.com:unitreerobotics/unitree_sdk2.git
 cd unitree_sdk2
 mkdir build && cd build
-cmake .. -DBUILD_EXAMPLES=OFF # Install on the /usr/local directory
+cmake .. -DBUILD_EXAMPLES=OFF # 安装到 /usr/local 目录
 sudo make install
-# Compile the robot_controller
-cd unitree_rl_lab/deploy/robots/g1_29dof # or other robots
+# 编译机器人控制器
+cd unitree_rl_lab/deploy/robots/g1_29dof # 或其他机器人
 mkdir build && cd build
 cmake .. && make
 ```
 
-### Sim2Sim
+### Sim2Sim 仿真
 
-Installing the [unitree_mujoco](https://github.com/unitreerobotics/unitree_mujoco?tab=readme-ov-file#installation).
+安装 [unitree_mujoco](https://github.com/unitreerobotics/unitree_mujoco?tab=readme-ov-file#installation)。
 
-- Set the `robot` at `/simulate/config.yaml` to g1
-- Set `domain_id` to 0
-- Set `enable_elastic_hand` to 1
-- Set `use_joystck` to 1.
+- 将 `/simulate/config.yaml` 中的 `robot` 设置为 g1
+- 将 `domain_id` 设置为 0
+- 将 `enable_elastic_hand` 设置为 1
+- 将 `use_joystck` 设置为 1。
 
 ```bash
-# start simulation
+# 启动仿真
 cd unitree_mujoco/simulate/build
 ./unitree_mujoco
-# ./unitree_mujoco -i 0 -n eth0 -r g1 -s scene_29dof.xml # alternative
+# ./unitree_mujoco -i 0 -n eth0 -r g1 -s scene_29dof.xml # 备选启动方式
 ```
 
 ```bash
 cd unitree_rl_lab/deploy/robots/g1_29dof/build
 ./g1_ctrl
-# 1. press [L2 + Up] to set the robot to stand up
-# 2. Click the mujoco window, and then press 8 to make the robot feet touch the ground.
-# 3. Press [R1 + X] to run the policy.
-# 4. Click the mujoco window, and then press 9 to disable the elastic band.
+# 1. 按 [L2 + 上] 使机器人站起
+# 2. 点击 mujoco 窗口，然后按 8 使机器人脚接触地面。
+# 3. 按 [R1 + X] 运行策略。
+# 4. 点击 mujoco 窗口，然后按 9 关闭弹簧拉力（橡皮筋）。
 ```
 
-### Sim2Real
+### Sim2Real 实机部署
 
-You can use this program to control the robot directly, but make sure the on-borad control program has been closed.
+可以直接用该程序控制机器人，但务必先关闭机器人板载控制程序。
 
 ```bash
-./g1_ctrl --network eth0 # eth0 is the network interface name.
+./g1_ctrl --network eth0 # eth0 为网卡名称。
 ```
 
-## Acknowledgements
+## 致谢
 
-This repository is built upon the support and contributions of the following open-source projects. Special thanks to:
+本仓库基于以下开源项目的支持与贡献，特别感谢：
 
-- [IsaacLab](https://github.com/isaac-sim/IsaacLab): The foundation for training and running codes.
-- [mujoco](https://github.com/google-deepmind/mujoco.git): Providing powerful simulation functionalities.
-- [robot_lab](https://github.com/fan-ziqi/robot_lab): Referenced for project structure and parts of the implementation.
-- [whole_body_tracking](https://github.com/HybridRobotics/whole_body_tracking): Versatile humanoid control framework for motion tracking.
+- [IsaacLab](https://github.com/isaac-sim/IsaacLab)：训练与运行代码的基础框架。
+- [mujoco](https://github.com/google-deepmind/mujoco.git)：提供强大的仿真功能。
+- [robot_lab](https://github.com/fan-ziqi/robot_lab)：项目结构与部分实现的参考。
+- [whole_body_tracking](https://github.com/HybridRobotics/whole_body_tracking)：用于运动跟踪的多功能人形机器人控制框架。

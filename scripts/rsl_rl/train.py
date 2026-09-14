@@ -146,6 +146,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
+    # velocity-curriculum sidecar (see mdp.curriculums.lin_vel_cmd_levels): fresh runs must not
+    # inherit command ranges from a previous run; resume runs keep the file so the range/gate
+    # survive restarts (the rsl-rl checkpoint does not store command ranges).
+    _curric_state_file = os.path.join(log_root_path, "curriculum_state.json")
+    if not (agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation") and os.path.exists(
+        _curric_state_file
+    ):
+        os.remove(_curric_state_file)
+        print(f"[INFO] Removed stale velocity-curriculum state: {_curric_state_file}")
     # specify directory for logging runs: {time-stamp}_{run_name}
     log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     # This way, the Ray Tune workflow can extract experiment name.

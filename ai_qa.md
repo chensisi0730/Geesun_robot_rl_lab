@@ -1,7 +1,208 @@
+
+
+## 现在能爬多高的楼梯？
+
+**直接答案：当前 v5 run（terrain level = 2.0）中，机器人实际接触过的楼梯最高约 10 cm（8.6–10.4 cm），且任意时刻只有约 25% 的 env 落在楼梯瓦片上。地形生成器的物理上限是 23 cm。**
+
+### 推导链（全部已验证到代码行）
+
+**① 地形网格布局**（`terrain_generator.py:235-257`，GO2 为 10 行 × 20 列，每瓦片 8m×8m）：
+- **列 → 地形类型**（按 proportion 固定分配，与难度无关）：
+  | 列 | 地形 | 占比 |
+  |---|---|---|
+  | 0–2 | flat | 15% |
+  | 3–7 | random_rough | 25% |
+  | 8–14 | boxes | 35% |
+  | **15–19** | **pyramid_stairs** | **25%** |
+- **行 = 地形等级（level 直接索引行，不是 0..L 的集合）**：`env_origins = terrain_origins[level, col]`（`terrain_importer.py:329`），difficulty = (row + η)/10，η~U(0,1)
+
+**② 台阶高度公式**（`hf_terrains.py:177`）：
+```
+step_height = 0.05 + difficulty × (0.23 − 0.05)
+```
+
+**③ 各等级对应的台阶高度**：
+
+| 地形等级 (行) | difficulty | 台阶高度 | 金字塔总高（每侧≈8 步×0.3m 宽） |
+|---|---|---|---|
+| 0 | 0.0–0.1 | 5.0–6.8 cm | ~0.4–0.5 m |
+| 1 | 0.1–0.2 | 6.8–8.6 cm | ~0.5–0.7 m |
+| **2（v5 当前）** | **0.2–0.3** | **8.6–10.4 cm** | **~0.7–0.8 m** |
+| 3 | 0.3–0.4 | 10.4–12.2 cm | ~0.8–1.0 m |
+| 5 | 0.5–0.6 | 14.0–16.2 cm | ~1.1–1.3 m |
+| 7 | 0.7–0.8 | 17.6–19.4 cm | ~1.4–1.6 m |
+| 9（上限） | 0.9–1.0 | 21.2–23.0 cm | ~1.7–1.8 m |
+
+（金字塔中央是 3m 宽平地，两侧 2.5m 阶梯各约 8 级；boxes 瓦片同理按 difficulty 缩放，level 2 时方块高 8–9.5 cm。）
+
+### 当前 v5 实时状态（s≈17950，754 迭代）
+
+| 指标 | 值 | 含义 |
+|---|---|---|
+| `terrain_levels` | 2.002 | ~100% env 在 level 2（8.6–10.4 cm 楼梯 / 8–9.5 cm 方块） |
+| `error_vel_xy / yaw` | 0.117 / 0.186 | **均低于地形升级门限（0.2 / 0.3）** → 下一批窗口评估后 level 应升到 3 |
+| `lin_vel_cmd_levels` | 0.1 | 速度课程仍在攒 16 样本缓冲（~670 迭代后首次评估） |
+| `learning_rate` | 3.8e-4 | 健康 |
+| PhysX 溢出 | 0 | — |
+
+### 结论与建议
+
+1. **短期（未来几千迭代）**：terrain 将升到 level 3 → 楼梯 10.4–12.2 cm。之后每升一级台阶高增 ~1.8 cm。
+2. **想让 GO2 学会 15–20 cm 楼梯**：让课程自然爬到 level 5–7 即可（无需改配置），前提是速度课程同步推进、误差保持在门限内。按当前节奏（level 2 起步 + 误差达标），预计数小时到一天内可见 level 4–5。
+3. **不建议**直接把 `step_height_range` 上限提到 0.23 以上：GO2 EDU 硬件实测爬坡能力通常在 15–20 cm 台阶附近，sim 里 23 cm 的满难度（level 9）已略超硬件包线，sim2real 迁移时该档策略大概率失效。
+4. 若想**现在就验证楼梯能力**，可以起一个 `play.py` 推理（加载 v5 最新 checkpoint，手动把 env 放到 level 2 的楼梯列 15–19 上观察），但 10 cm 台阶属于平地策略的附带能力，不是专门强化过的。
+
+**一句话：现在 ~10 cm；地形课程健康推进的话，接下来每天大约能多学会 1–2 cm 台阶高度，1 周左右可覆盖 15 cm。**
+
+
+
+# PhysX 溢出（PhysX Overflow）是什么
+
+## 一、概念
+
+Isaac Sim 使用 PhysX 的 **GPU 并行仿真**跑 RL 训练（成百上千个环境同时做物理仿真）。PhysX 的 GPU 端缓冲区（接触点流、碰撞栈、堆内存等）是**启动时静态预分配的，不能动态扩容**。当某一步物理仿真产生的**接触点 / 碰撞对 / 数据量超过这些缓冲区容量**（或显存不够）时，PhysX 只能**丢弃超出部分**并打印警告——这就是 “PhysX 溢出”。
+
+仓库内 IsaacLab v2.3.0 的官方配置文档也明确说明了这一点（`IsaacLab_v2.3.0/source/isaaclab_physx/isaaclab_physx/physics/physx_manager_cfg.py` 第 29–33 行）：
+
+> "Unlike CPU PhysX, the GPU simulation feature is unable to dynamically grow all the buffers. … **If insufficient buffer sizes are provided, the simulation will fail with errors and lead to adverse behaviors.**"
+
+## 二、为什么本仓库容易触发（结合当前上下文）
+
+| 因素 | 现状 |
+|---|---|
+| `num_envs` | 任务默认 `4096`，但 README 中 Go2 训练用的是 `--num_envs 12000`（12000 × 13 个 GO2 连杆 ≈ 15 万刚体） |
+| 地形 | GO2 使用复杂粗糙地形（`random_rough` / `boxes` / `pyramid_stairs`），是典型的 **contact-rich** 场景，接触量远超平地 |
+| 传感器 | 两个任务都挂了 `contact_forces`（history_length=3）+ `height_scanner`（160 条射线/环境），每步物理负载更高 |
+| 缓冲区默认值 | `gpu_max_rigid_contact_count = 2**23`，`gpu_max_rigid_patch_count = 5*2**15 ≈ 164k`（偏小），`gpu_collision_stack_size = 2**26` |
+| 显存 | RTX 5090 共 32GB，当前训练已占 **28GB（98% 利用率）**，几乎没有余量，Isaac Sim 视口 / Realsense / 其他进程都会挤占 |
+
+## 三、溢出的后果（对训练的影响）
+
+1. **接触点被丢弃** → 机器人视觉上“打滑”、“穿过地面”、脚部抖动，物理行为失真；
+2. **观测数据残缺** → contact forces 出现 0/缺失值，策略学到错误特征，奖励曲线跳变、训练不稳定甚至 NaN；
+3. **显存型溢出（OOM）** → 仿真步骤失败，严重时进程直接崩溃。
+
+## 四、如何判断是否发生了溢出
+
+- **训练控制台**：出现 `omni.physx` 相关的 overflow / contact count 超过 buffer 的警告；
+- **`nvidia-smi`**：显存占用贴着 32GB 上限（如现在 28GB+）；
+- **TensorBoard / 可视化**：reward 曲线突然异常跳变、NaN；回放时机器人穿模、滑倒。
+
+## 五、处理办法（改动最小，不破坏 height_scanner 消融对照）
+
+按优先级：
+
+1. **先降 `num_envs`**（12000 → 4096 甚至 2048）复跑，确认警告是否消失——最快定位手段；
+2. **保持大环境数则调大 GPU 缓冲区**，在任务 `SimulationCfg.physics` 中显式设置（Isaac Lab 官方 contact-rich 场景示例 `tacsl_sensor.py` / `gear_assembly_env_cfg.py` 就是这么做的）：
+   ```python
+   physics=PhysxCfg(
+       gpu_collision_stack_size=2**30,
+       gpu_max_rigid_contact_count=2**25,
+       gpu_max_rigid_patch_count=2**22,
+   )
+   ```
+   注意：这是**仿真容量参数，不改变物理语义**，对消融实验无影响——但要求 on/off 两组保持相同参数；
+3. **释放显存**：训练时用 `--headless`，关闭 Isaac Sim 视口、Realsense 等占用 GPU 的进程。
+
+## 六、后续可做（切换 Act 模式后）
+
+1. 在 `README.md` 增加一节 **“PhysX 溢出识别与处理”**（判断方法 + 上面的缓冲区参数）；
+2. 按 AGENTS.md 要求补充 **“训练完成后验证训练结果”的步骤**（headless 回放检查、TensorBoard 指标、ONNX 导出与 C++ 部署验证）；
+3. 如确认当前 12000 环境训练触发了溢出，将 `PhysxCfg` 参数加入 G1/GO2 velocity 任务的仿真配置（最小改动）。
+
+## 结论：会。两者是完全独立的资源
+
+`Patch buffer overflow` 报的是 **PhysX GPU 内部一个固定大小的碰撞管线池（narrowphase patch pool）耗尽**，与整机显存剩余多少无关。
+
+### 机制（用本仓库 v3 的真实日志佐证）
+
+v3（`/tmp/train_go2_v3.log`，Isaac Sim 4.5）中的原始报错：
+
+```
+[Error] [omni.physx.plugin] PhysX error: Patch buffer overflow detected,
+please increase its size to at least 328668 in the scene desc!
+  FILE .../gpunarrowphase/src/PxgNarrowphaseCore.cpp, LINE 1639
+```
+
+关键点：
+
+1. **来源是 `gpunarrowphase`**（GPU 窄相碰撞检测核心）：PhysX 在**场景创建时**按 scene desc 里估计的物理对象数预分配一个固定大小的 patch 池（broadphase/narrowphase 管线用），它通常只有几百 MB 量级，是 32GB 显存里很小的一块。
+2. **不会因为有空闲显存就自动扩大**：池大小在场景初始化时定死；实际碰撞对象/候选对需求超过估计值就报错。报错文案也印证了这点——"please increase its size to at least **328668** in the **scene desc**"，要的是把场景描述里的**池配置**调大，而不是显存不足。空闲显存只能防"分配失败"，防不了"池耗尽"。
+3. **报错但不致命，这才是最危险的**：v3 里该错误从进程启动 52 秒（首个物理步，场景初始化阶段）开始**每个物理步都刷**，累计 98145 行、持续约 2h52m，而训练一直在跑、checkpoint 正常保存。超出的 patch 会被静默跳过 → 部分碰撞对不计算 → 个别 env 的机器人可能穿地/丢接触，**训练数据被污染而 TB 曲线看起来"正常"**——比直接崩溃更隐蔽。
+
+### 与本仓库现状的关系
+
+| run | Isaac Sim | overflow 行数 |
+|---|---|---|
+| v3（09-11） | 4.5 | **98145**（每步报错，场景初始化即触发 → 是"构建期分配低估"，不是运行期泄漏） |
+| v4 / v5 / v6 / v7（当前 22000 envs + 现地形配置） | 4.5 | **0**（当前配置在池容量内） |
+
+所以当前 v7（22000 envs、headless）显存占用远低于 32GB、overflow=0，两个指标都健康；监控脚本里 `overflow_new` 计数就是专门盯这个唯一观察渠道的（它没有 TB 标签）。
+
+### 如果将来再触发（如增大 num_envs、换更复杂地形、场景加物理对象）
+
+1. 先 `grep -c 'Patch buffer overflow' <log>` 确认（文档 §3.1/§3.5 的验收标准是 0）；
+2. 降低单场景碰撞对象量：减少 num_envs、简化地形碰撞网格（减少细分/凸块）；
+3. 根因方向：让 Isaac Sim 在首步物理模拟前的对象统计覆盖全部物理对象（场景图在第一个 physics step 前构建完整），使自动分配 ≥ 实际需求（v3 里需求 328668 个 patch）。
+
+## 检查结论：**发生过，且影响是实质性的**
+
+## 一、直接证据（控制台日志）
+
+| 运行 | 溢出次数 | 备注 |
+|---|---|---|
+| **GO2 v3**（`2026-09-11_13-03-52`，num_envs=22000，`gpu_max_rigid_patch_count=327680`） | **98,145 次** | 从 t≈52s 起**每一步都溢出**，持续到运行结束；PhysX 需求 328K~367K，缓冲区 327680 始终不够；触发 “Exceeding maximum number of PhysX errors (1000)”；最后 **core dump 崩溃**（`[Error] [carb]` + “已放弃（核心已转储）”） |
+| GO2 v4（`15-56-40`）、v5（`20-58-17`，运行中）、v2、resume、test2、G1（09-07） | **0 次** | 干净 |
+
+错误原文（`/tmp/train_go2_v3.log`）：
+```
+[Error] [omni.physx.plugin] PhysX error: Patch buffer overflow detected,
+please increase its size to at least 328668 in the scene desc!
+```
+
+## 二、TensorBoard 曲线反映出的影响（num_envs 均为 22000）
+
+所有曲线**无 NaN、无悬崖式尖峰**——溢出的危害是**物理质量静默劣化**（接触 patch 被丢弃 → 接触力/摩擦系统性被低估），而不是崩溃：
+
+| 运行 | 缓冲区 | 迭代范围 | reward | ep_len | time_out | bad_ori | err_xy | err_yaw |
+|---|---|---|---|---|---|---|---|---|
+| **v3（溢出）** | 327680 | 17200→18200 | 35→**24** ↓ | ~994 | 0.993 | 0.006 | 0.224 | 0.26 |
+| **v4（已修，但接着 18200 训）** | 1310720 | 18200→19900 | 35→**7** ↓↓ | ~983 | 0.968 | 0.029 | **0.327** | **0.38** |
+| **v5（已修，从干净点 17200 重跑，进行中）** | 1310720 | 17200→17600+ | →**36.6** ↑ | 1000 | 0.997 | 0.003 | **0.117** | **0.17** |
+
+**关键对照推理**（v3/v4/v5 构成了一组天然对照实验）：
+- v3：全程 98K 次溢出 → 奖励从 35 衰减到 24，跟踪误差从 0.12 涨到 0.22；
+- v4：溢出已修复，但**接着被污染的检查点 18200 继续训** → 奖励继续衰减到 7，err_xy 升到 0.33，1700 迭代未恢复；
+- v5：**与 v4 相同课程（`terrain_levels_vel_fixed`）、相同缓冲区**，唯一区别是起点换回干净检查点 17200 → 奖励 36.6 且仍在爬升，各项误差只有 v3 的一半左右。
+
+⇒ 结论：溢出对策略的污染**真实存在且持续**（策略在错误接触动力学上学到了错误的动作-后果映射）；课程切换不是 v4 衰减的原因（v5 用同样课程表现良好）。
+
+## 三、根因与现状
+
+- **根因**：22000 环境 + GO2 粗糙地形下单步接触 patch 需求 ~328K–367K，而 v3 的缓冲区 327680 仅比默认值大 2 倍，**刚好差一点**（需求最小值 328,668 只比它大 0.3%，但永不够）；
+- **已修复**（v4/v5 的 `params/env.yaml` diff）：`gpu_max_rigid_patch_count: 327680 → 1310720`（4 倍，余量 ~3.5 倍）+ 课程 `terrain_levels_vel → terrain_levels_vel_fixed`；
+- **当前 v5 运行**（~22:03 已存 model_17600，GPU 98% 在训）：至今 **0 次溢出**，曲线健康（time_out 0.997、bad_ori 0.003）。
+
+## 四、建议
+
+1. **模型选择**：18200–19900 检查点（v4 线）疑似被 v3 溢出污染，**v5 线（17200+）是干净线**；等 v5 训完，建议对两线做回放对比验证（也可直接弃用 v4 线）；
+2. **保持** `gpu_max_rigid_patch_count=1310720`；今后若再提高 num_envs 或地形复杂度，按 `需求 ≈ num_envs × ~16 patches` 重新估算；
+3. **加入验证流程**：每次训练后 `grep -c 'Patch buffer overflow' <训练日志>` 必须为 0，非 0 则该检查点区间视为受污染；
+4. **附带发现（与溢出无关）**：G1 09-07 的运行（`train_test2.log`）无任何溢出，但曲线显示训练失败——`bad_orientation≈0.98`、平均 ep_len≈6 步、`time_out≈0`，即 G1 基本站不起来，属独立问题，建议另行排查 G1 任务配置（动作尺度/初始姿态/地形）。
+
+（本次为 Plan 模式，只做了只读检查；如需我把“PhysX 溢出检查 + 训练结果验证步骤”写入 README 文档，请切换到 Act 模式。）
+
+
 # RL 的输出是什么？如何给到 PD 控制？
 
 结合本仓库（G1 29dof / GO2 velocity 任务）的实际代码，结论如下：
 
+## 监控要点（后续检查）
+指标	预期
+Curriculum/terrain_levels	应随能力提升上升（旧 run 是 4.94→1.2 一路降）
+Metrics/base_velocity/error_vel_xy	稳态 < 0.15 后速度课程才会解锁
+Curriculum/lin_vel_cmd_levels	缓慢 0.1→1.0 爬升（每次 +0.1，每 1000 步判定一次）
+Episode_Termination/time_out	应 > 95%（旧 run 97%）
 ## 一、RL（actor 网络）的输出
 
 __输出是"目标关节位置角"的增量（无量纲动作），不是力矩。__
