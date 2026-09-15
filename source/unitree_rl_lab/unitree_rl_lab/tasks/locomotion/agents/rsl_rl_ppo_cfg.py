@@ -16,8 +16,8 @@ class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
+        actor_hidden_dims=[1024, 512, 256],  # 增大隐藏层维度以适应新增深度视觉观察量
+        critic_hidden_dims=[1024, 512, 256],
         activation="elu",
     )
     algorithm = RslRlPpoAlgorithmCfg(

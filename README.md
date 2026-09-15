@@ -77,9 +77,9 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
     ```bash
     ./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity # support for autocomplete task-name
     # same as
-    python scripts/rsl_rl/train.py --headless --task Unitree-G1-29dof-Velocity --num_envs 22000 --resume 
+    conda run -n env_isaaclab_sim5  python scripts/rsl_rl/train.py --headless --task Unitree-G1-29dof-Velocity --num_envs 22000 --resume 
 
-    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/train.py --headless --task Unitree-Go2-Velocity --num_envs 8000 --resume
+    conda run -n env_isaaclab_sim5  python scripts/rsl_rl/train.py --headless --task Unitree-Go2-Velocity --num_envs 12000 --resume
 
 
     tensorboard --logdir logs/rsl_rl/
