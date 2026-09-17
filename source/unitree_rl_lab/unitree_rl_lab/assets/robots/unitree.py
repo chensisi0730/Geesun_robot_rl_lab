@@ -17,8 +17,9 @@ from isaaclab.utils import configclass
 
 from unitree_rl_lab.assets.robots import unitree_actuators
 
-UNITREE_MODEL_DIR = "/home/css/work/robot/unitree/unitree_rl_lab_mini_fix/unitree_model"  # Replace with the actual path to your unitree_model directory
-UNITREE_ROS_DIR = "/home/css/work/robot/unitree/unitree_ros"  # Replace with the actual path to your unitree_ros package
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../"))
+UNITREE_MODEL_DIR = os.environ.get("UNITREE_MODEL_DIR", os.path.join(_REPO_ROOT, "unitree_model"))
+UNITREE_ROS_DIR = os.environ.get("UNITREE_ROS_DIR", "/home/css/work/robot/unitree/unitree_ros")
 
 
 @configclass
@@ -797,6 +798,8 @@ def _prepare_geesun_dog_urdf() -> None:
     tmp_mesh_dir = f"{tmp_pkg_dir}/meshes"
     src_urdf = f"{GEESUN_DOG_DIR}/geesun-dog/dog1/urdf/dog1.urdf"
     dst_urdf = f"{tmp_pkg_dir}/dog1.urdf"
+    if not os.path.isfile(src_urdf):
+        return
     os.makedirs(tmp_mesh_dir, exist_ok=True)
 
     # Generate placeholder STL for the four empty hip meshes; copy all other meshes.
@@ -910,6 +913,10 @@ def ensure_geesun_dog_usd() -> str:
         The path to the converted USD file.
     """
     urdf_path = "/tmp/IsaacLab/geesun_dog/dog1.urdf"
+    if not os.path.isfile(urdf_path):
+        raise FileNotFoundError(
+            f"Geesun Dog URDF is unavailable: expected source under {GEESUN_DOG_DIR}"
+        )
     if os.path.exists(GEESUN_DOG_USD) and os.path.getmtime(GEESUN_DOG_USD) >= os.path.getmtime(urdf_path):
         return GEESUN_DOG_USD
 

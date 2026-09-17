@@ -12,7 +12,8 @@ The terrain is selected with ``--terrain``:
 
 - ``flat`` (default): force a pure flat terrain.
 - ``play``: no override, use the task's play environment terrain as configured.
-- ``complex``: force a mixed rough terrain (slopes / stairs / boxes / rough),
+- ``random_rough`` / ``boxes`` / ``stairs``: isolate one trained terrain type.
+- ``complex``: force a mixed rough terrain (stairs / boxes / rough),
   with robots spawned on all difficulty rows (worst case for torque stats).
 
 Usage:
@@ -43,16 +44,23 @@ parser.add_argument(
     "--terrain",
     type=str,
     default="flat",
-    choices=["flat", "play", "complex"],
+    choices=["flat", "play", "random_rough", "boxes", "stairs", "complex"],
     help=(
         "Terrain for the test: 'flat' = forced pure flat terrain (default), "
         "'play' = use the task's play env terrain as configured, "
+        "'random_rough'/'boxes'/'stairs' = isolate one trained terrain type, "
         "'complex' = forced mixed rough terrain (worst-case walking/torque stats)."
     ),
 )
 parser.add_argument("--num_envs", type=int, default=64, help="Number of environments to simulate.")
 parser.add_argument("--steps", type=int, default=500, help="Number of policy steps to record.")
 parser.add_argument("--warmup", type=int, default=50, help="Initial steps discarded to skip settling transient.")
+parser.add_argument(
+    "--full_command_range",
+    action="store_true",
+    default=False,
+    help="Use the play config's full command limits. Default keeps the stage-1 +/-0.25 m/s linear range.",
+)
 parser.add_argument(
     "--output", type=str, default=None, help="Output CSV path. Defaults to <checkpoint_dir>/flat_walk_stats.csv."
 )
@@ -92,45 +100,28 @@ from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
 
 import isaaclab.terrains as terrain_gen
 
-# Mixed rough terrain for --terrain complex. Reuses the sub-terrain recipe that is
-# commented out in the tasks' COBBLESTONE_ROAD_CFG so the verification terrain
-# matches what the play cfg will use once complex sub-terrains are enabled there.
-# Rows go from easy (row 0) to hard (last row); with num_cols=10 every sub-terrain
-# type gets its own columns.
+# Mixed rough terrain matching the GO2 training types and limits.
 COMPLEX_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
     border_width=20.0,
     num_rows=5,
-    num_cols=10,
+    num_cols=12,
     horizontal_scale=0.1,
     vertical_scale=0.005,
     slope_threshold=0.75,
     difficulty_range=(0.0, 1.0),
+    curriculum=True,
     use_cache=False,
     sub_terrains={
         "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.1),
         "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-            proportion=0.15, noise_range=(0.01, 0.06), noise_step=0.01, border_width=0.25
-        ),
-        "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
-            proportion=0.15, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
-        ),
-        "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
-            proportion=0.15, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
+            proportion=0.2, noise_range=(0.01, 0.06), noise_step=0.01, border_width=0.25
         ),
         "boxes": terrain_gen.MeshRandomGridTerrainCfg(
-            proportion=0.15, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
+            proportion=0.2, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
         ),
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.15,
-            step_height_range=(0.05, 0.23),
-            step_width=0.3,
-            platform_width=3.0,
-            border_width=1.0,
-            holes=False,
-        ),
-        "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.15,
+            proportion=0.2,
             step_height_range=(0.05, 0.23),
             step_width=0.3,
             platform_width=3.0,
@@ -139,6 +130,42 @@ COMPLEX_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         ),
     },
 )
+
+
+def single_terrain_cfg(mode: str) -> terrain_gen.TerrainGeneratorCfg:
+    """Build an isolated test terrain using the same limits as GO2 training."""
+    if mode == "random_rough":
+        terrain = terrain_gen.HfRandomUniformTerrainCfg(
+            proportion=1.0, noise_range=(0.01, 0.06), noise_step=0.01, border_width=0.25
+        )
+    elif mode == "boxes":
+        terrain = terrain_gen.MeshRandomGridTerrainCfg(
+            proportion=1.0, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
+        )
+    elif mode == "stairs":
+        terrain = terrain_gen.MeshPyramidStairsTerrainCfg(
+            proportion=1.0,
+            step_height_range=(0.05, 0.23),
+            step_width=0.3,
+            platform_width=3.0,
+            border_width=1.0,
+            holes=False,
+        )
+    else:
+        raise ValueError(f"Unsupported terrain: {mode}")
+    return terrain_gen.TerrainGeneratorCfg(
+        size=(8.0, 8.0),
+        border_width=20.0,
+        num_rows=5,
+        num_cols=4,
+        horizontal_scale=0.1,
+        vertical_scale=0.005,
+        slope_threshold=0.75,
+        difficulty_range=(0.0, 1.0),
+        curriculum=True,
+        use_cache=False,
+        sub_terrains={mode: terrain},
+    )
 
 
 def resolve_checkpoint(agent_cfg) -> str:
@@ -152,6 +179,9 @@ def resolve_checkpoint(agent_cfg) -> str:
 
 
 def main():
+    if args_cli.steps <= args_cli.warmup:
+        raise ValueError("--steps must be greater than --warmup")
+
     # parse configuration (use the play env config: fewer envs, no terrain curriculum)
     env_cfg = parse_env_cfg(
         args_cli.task,
@@ -160,6 +190,9 @@ def main():
         use_fabric=not args_cli.disable_fabric,
         entry_point_key="play_env_cfg_entry_point",
     )
+    if not args_cli.full_command_range:
+        env_cfg.commands.base_velocity.ranges.lin_vel_x = (-0.25, 0.25)
+        env_cfg.commands.base_velocity.ranges.lin_vel_y = (-0.25, 0.25)
 
     # Apply terrain selection (--terrain). 'flat' keeps the original behavior;
     # 'play' leaves the play env cfg terrain untouched; 'complex' forces a mixed
@@ -185,6 +218,11 @@ def main():
         env_cfg.scene.terrain.terrain_generator = COMPLEX_TERRAIN_CFG
         # Spawn each env on a random difficulty row (easiest -> hardest)
         env_cfg.scene.terrain.max_init_terrain_level = COMPLEX_TERRAIN_CFG.num_rows - 1
+    elif args_cli.terrain in {"random_rough", "boxes", "stairs"}:
+        isolated_cfg = single_terrain_cfg(args_cli.terrain)
+        env_cfg.scene.terrain.terrain_generator = isolated_cfg
+        env_cfg.scene.terrain.max_init_terrain_level = isolated_cfg.num_rows - 1
+    env_cfg.curriculum = None
     # 'play': no override, use the task's play env terrain as configured
     print(f"[INFO] Terrain mode: {args_cli.terrain}")
 
@@ -216,6 +254,10 @@ def main():
     torque_samples: list[torch.Tensor] = []  # each: (num_envs, num_joints)
     position_samples: list[torch.Tensor] = []  # each: (num_envs, 3) for base position
     velocity_samples: list[torch.Tensor] = []  # each: (num_envs, 6) for base velocity
+    error_xy_sum = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device)
+    error_yaw_sum = torch.zeros_like(error_xy_sum)
+    failed_once = torch.zeros(env.unwrapped.num_envs, dtype=torch.bool, device=env.unwrapped.device)
+    recorded_steps = 0
     print(f"[INFO] Recording {args_cli.steps} steps ({args_cli.warmup} warmup steps discarded) ...")
 
     for step in range(args_cli.steps):
@@ -224,8 +266,15 @@ def main():
             obs, _, _, _ = env.step(actions)
         if step >= args_cli.warmup:
             torque_samples.append(robot.data.applied_torque.clone())
-            position_samples.append(robot.data.root_pos_w.clone())
+            root_pos = robot.data.root_pos_w.clone()
+            root_pos[:, 2] -= env.unwrapped.scene.env_origins[:, 2]
+            position_samples.append(root_pos)
             velocity_samples.append(robot.data.root_lin_vel_w.clone())
+            command = env.unwrapped.command_manager.get_command("base_velocity")
+            error_xy_sum += torch.linalg.norm(command[:, :2] - robot.data.root_lin_vel_b[:, :2], dim=-1)
+            error_yaw_sum += torch.abs(command[:, 2] - robot.data.root_ang_vel_b[:, 2])
+            failed_once |= env.unwrapped.reset_terminated
+            recorded_steps += 1
 
     env.close()
 
@@ -265,18 +314,24 @@ def main():
     avg_height = positions[:, 2].mean().item()
     # Calculate height variance (stability)
     height_var = positions[:, 2].var().item()
+    per_env_error_xy = error_xy_sum / recorded_steps
+    per_env_error_yaw = error_yaw_sum / recorded_steps
+    mean_error_xy = per_env_error_xy.mean().item()
+    mean_error_yaw = per_env_error_yaw.mean().item()
+    success_rate = (
+        (~failed_once) & (per_env_error_xy < 0.25) & (per_env_error_yaw < 0.35)
+    ).float().mean().item()
 
     print(f"  Average forward velocity: {avg_forward_vel:.3f} m/s")
     print(f"  Average height: {avg_height:.3f} m")
     print(f"  Height variance: {height_var:.6f} m²")
+    print(f"  Mean XY tracking error: {mean_error_xy:.3f} m/s")
+    print(f"  Mean yaw tracking error: {mean_error_yaw:.3f} rad/s")
+    print(f"  Success rate (no early termination, error limits met): {success_rate:.1%}")
     print(f"  Walking stability: {'Stable' if height_var < 0.01 else 'Unstable'}")
 
     # save results (default CSV name depends on the terrain mode)
-    default_output = {
-        "flat": "flat_walk_stats.csv",
-        "play": "play_terrain_stats.csv",
-        "complex": "complex_terrain_stats.csv",
-    }[args_cli.terrain]
+    default_output = f"{args_cli.terrain}_terrain_stats.csv"
     output_path = args_cli.output or os.path.join(os.path.dirname(resume_path), default_output)
     with open(output_path, mode="w", newline="") as f:
         writer = csv.writer(f)
@@ -289,6 +344,9 @@ def main():
         writer.writerow(["average_forward_velocity_ms", f"{avg_forward_vel:.4f}"])
         writer.writerow(["average_height_m", f"{avg_height:.4f}"])
         writer.writerow(["height_variance_m2", f"{height_var:.6f}"])
+        writer.writerow(["mean_error_xy_ms", f"{mean_error_xy:.4f}"])
+        writer.writerow(["mean_error_yaw_rads", f"{mean_error_yaw:.4f}"])
+        writer.writerow(["success_rate", f"{success_rate:.4f}"])
     print(f"[INFO] Statistics saved to: {output_path}")
 
     if args_cli.save_raw:

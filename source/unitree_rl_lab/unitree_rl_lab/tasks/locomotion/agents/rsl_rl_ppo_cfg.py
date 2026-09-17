@@ -34,3 +34,36 @@ class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class UnitreeGo2PPORunnerCfg(BasePPORunnerCfg):
+    """Stability-tuned PPO for the Go2 velocity task.
+
+    The shared :class:`BasePPORunnerCfg` was too aggressive once the command curriculum
+    widened: the entropy bonus kept growing the exploration noise, the KL-adaptive LR kept
+    collapsing to its 1e-5 floor, and the value function diverged (see the run analysis in
+    ``doc/training_monitoring.md``). These overrides reduce the update magnitude and the
+    exploration pressure so the gated curriculum can advance without destabilising.
+    """
+
+    policy = RslRlPpoActorCriticCfg(
+        init_noise_std=0.5,
+        actor_hidden_dims=[512, 256, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+    )
+    algorithm = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.005,
+        num_learning_epochs=3,
+        num_mini_batches=8,
+        learning_rate=3.0e-4,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.005,
+        max_grad_norm=0.5,
+    )

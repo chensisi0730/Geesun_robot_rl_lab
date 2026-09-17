@@ -230,9 +230,15 @@ conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
     --task Unitree-Go2-Velocity \
     --terrain complex \
     --steps 1000
+
+# 分地形定位短板
+for terrain in random_rough boxes stairs; do
+    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
+        --task Unitree-Go2-Velocity --terrain "$terrain" --steps 1000
+done
 ```
 
-检查平均前进速度、高度方差、摔倒情况和各关节 Peak/P99/RMS 力矩。电机选型时，以 `complex` 结果为主要参考，并为峰值力矩预留 1.5-2.0 倍安全余量。
+检查 body-frame 速度误差、无提前终止成功率、高度方差和各关节 Peak/P99/RMS 力矩。
 
 上述命令默认自动加载最新 checkpoint。指定模型时，增加：
 `--checkpoint logs/rsl_rl/unitree_go2_velocity/RUN_ID/model_7300.pt`。
@@ -249,11 +255,17 @@ tensorboard --logdir logs/rsl_rl/unitree_go2_velocity
 - `Episode_Reward/track_lin_vel_xy`、`Episode_Reward/track_ang_vel_z`
 - `Metrics/base_velocity/error_vel_xy`、`Metrics/base_velocity/error_vel_yaw`
 - `Curriculum/terrain_levels`、`Curriculum/lin_vel_cmd_levels`
+- `Curriculum/command_ranges/{x_min,x_max,y_min,y_max}`
+- `Curriculum/terrain_performance_by_type/*_{level,error_xy,error_yaw,success_rate}`
 - `Episode_Termination/time_out`、`Episode_Termination/bad_orientation`
 - `Loss/value_function`、`Loss/surrogate`、`Policy/mean_noise_std`
 
 判断时使用训练后期的滑动平均，不要只看单个尖峰。通常应同时满足：episode 长度接近上限、`time_out` 占比稳定且较高、
 `bad_orientation` 较低，速度误差总体下降，课程等级在达到当前能力上限后保持稳定，损失没有持续发散。
+GO2 当前使用两阶段训练：阶段 1 将线速度固定为 `±0.25 m/s`，地形仅在正常超时且
+`error_vel_xy < 0.22 m/s`、`error_vel_yaw < 0.30 rad/s` 时升级；提前终止，或误差超过
+`0.40 m/s`、`0.45 rad/s` 时降级。分地形成功率稳定后，阶段 2 再启用速度课程。
+`terrain_levels` 是平均难度，不是性能分数，必须和分地形误差、成功率一起判断。
 修改 curriculum 后，旧 TensorBoard 运行只能用于对照；应重新训练或从头启动一个新运行，确认新的速度课程不会过早解锁。
 如果训练因 Isaac Sim 异常退出，最后一个 checkpoint 只能作为候选模型，不能直接作为最终验收模型。
 
@@ -279,8 +291,9 @@ grep -c 'Patch buffer overflow' /tmp/train_go2.log
 
 - [ ] 平地行走稳定，无明显晃动
 - [ ] 复杂地形上能持续前进
-- [ ] 速度跟踪没有明显退化
-- [ ] 摔倒率在可接受范围内
+- [ ] `flat/random_rough/boxes/stairs` 分项成功率均达到 90%
+- [ ] `error_vel_xy <= 0.25 m/s`、`error_vel_yaw <= 0.35 rad/s`
+- [ ] `time_out >= 99%`、`bad_orientation <= 1%`
 - [ ] 复杂地形下力矩没有异常峰值
 - [ ] 步态自然，无异常动作
 - [ ] 训练日志无 PhysX Patch buffer overflow（计数为 0）

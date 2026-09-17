@@ -15,8 +15,8 @@ Per check it
      (SIGTERM, SIGKILL after 15 s) and sets a stop marker so the poisoned run is not
      auto-resumed (marker auto-clears once a newer run writes TensorBoard data);
   3. snapshots the key TensorBoard curves (last 200 iterations) of the newest run dir;
-  4. raises anomaly flags against the previous snapshot (frozen curriculum, LR pinned at the
-     floor, time_out collapse, reward drop, new PhysX overflow).
+  4. raises anomaly flags against the previous snapshot (terrain promotion with degraded
+     tracking/reward, LR pinned at the floor, termination increase, new PhysX overflow).
 
 Human-readable report: outputs/monitor/report.md (appended).
 Persistent state (log offsets, previous snapshot, last auto-resume time, stop marker): outputs/monitor/state.json.
@@ -29,6 +29,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -39,26 +40,34 @@ MON_DIR = REPO / "outputs" / "monitor"
 STATE_PATH = MON_DIR / "state.json"
 REPORT_PATH = MON_DIR / "report.md"
 
-PY = "/home/css/miniconda3/envs/env_isaaclab_sim51/bin/python"
+PY = sys.executable
 TASK = "Unitree-Go2-Velocity"
 NUM_ENVS = 22000
 LOG_GLOB = "/tmp/train_go2_v*.log"
 TRAIN_PATTERN = r"train\.py.*Unitree-Go2-Velocity"
 LAST_N = 200  # iterations considered for the snapshot
 RESUME_COOLDOWN_S = 600  # crash-loop guard for auto-resume
+VALUE_LOSS_ABORT = 100.0  # value_loss median above this == diverged value function
 
 # TensorBoard tag -> short key used in the snapshot/report
 KEY_TAGS = {
     "Curriculum/terrain_levels": "level",
-    "Curriculum/lin_vel_cmd_levels": "range",
+    "Curriculum/lin_vel_cmd_levels/x_max": "range",
+    "Curriculum/lin_vel_cmd_levels/success_rate": "gate_success",
     "Metrics/base_velocity/error_vel_xy": "err_xy",
     "Metrics/base_velocity/error_vel_yaw": "err_yaw",
     "Train/mean_reward": "reward",
     "Episode_Termination/time_out": "time_out",
+    "Episode_Termination/bad_orientation": "bad_orientation",
+    "Loss/value_function": "value_loss",
     "Loss/learning_rate": "lr",
+    "Policy/mean_noise_std": "noise_std",
     "Perf/total_fps": "fps",
 }
-SNAP_KEYS = ("level", "range", "err_xy", "err_yaw", "reward", "time_out", "lr", "fps")
+SNAP_KEYS = (
+    "level", "range", "gate_success", "err_xy", "err_yaw", "reward", "time_out",
+    "bad_orientation", "value_loss", "lr", "noise_std", "fps",
+)
 
 
 def now_str() -> str:
@@ -292,6 +301,31 @@ def main() -> None:
         pids = train_pids()
         alive = bool(pids)
 
+    # Read the curves before deciding whether to auto-resume: a diverged run must not be
+    # resurrected (the old monitor kept restarting a value function that had blown up).
+    snap: dict = {}
+    if run_dir is not None:
+        try:
+            snap = snapshot(load_tb(run_dir))
+        except Exception as e:  # keep the monitor alive even if TB is unreadable
+            actions.append(f"TB read failed: {e!r}")
+
+    vl = snap.get("value_loss", {})
+    if vl.get("n", 0) >= 50 and vl.get("med", 0.0) > VALUE_LOSS_ABORT:
+        reason = f"value_function loss median {vl['med']} > {VALUE_LOSS_ABORT} (diverged)"
+        flags.append(f"CRITICAL: {reason}")
+        if alive:
+            actions.append("AUTO-STOP on value-function divergence: " + stop_training(reason))
+            pids = train_pids()
+            alive = bool(pids)
+        if not state.get("stop_marker"):
+            state["stop_marker"] = {
+                "at": time.time(),
+                "reason": reason,
+                "evidence": f"value_loss last200 med={vl['med']}",
+            }
+        actions.append("auto-resume SUPPRESSED until manual restart (value-function divergence)")
+
     if not alive:
         flags.append("CRITICAL: training process DEAD")
         if state.get("stop_marker"):
@@ -300,16 +334,13 @@ def main() -> None:
             )
         else:
             actions.append("process dead -> " + try_auto_resume(state, run_dir))
-    snap: dict = {}
-    if run_dir is not None:
-        try:
-            snap = snapshot(load_tb(run_dir))
-        except Exception as e:  # keep the monitor alive even if TB is unreadable
-            actions.append(f"TB read failed: {e!r}")
 
     to = snap.get("time_out", {})
     if to.get("n", 0) >= 50 and to.get("med") is not None and to["med"] < 0.85:
         flags.append(f"WARN: time_out median {to['med']} < 0.85")
+    bad_orientation = snap.get("bad_orientation", {})
+    if bad_orientation.get("n", 0) >= 50 and bad_orientation.get("med", 0.0) > 0.02:
+        flags.append(f"WARN: bad_orientation median {bad_orientation['med']} > 0.02")
     if snap.get("lr", {}).get("n", 0) >= 50 and snap.get("lr_pin_frac", 0.0) > 0.25:
         flags.append(f"WARN: LR pinned at 1e-5 for {snap['lr_pin_frac'] * 100:.0f}% of last {LAST_N} iters")
     prev_reward = prev_snap.get("reward", {}).get("med")
@@ -320,11 +351,17 @@ def main() -> None:
     ):
         flags.append(f"WARN: mean_reward {snap['reward']['med']} < 0.6 x previous {prev_reward}")
     if snap and prev_snap:
-        d_level = abs(snap.get("level", {}).get("last", 0.0) - prev_snap.get("level", {}).get("last", 0.0))
-        d_range = abs(snap.get("range", {}).get("last", 0.0) - prev_snap.get("range", {}).get("last", 0.0))
-        hours_since_prev = (time.time() - prev_check) / 3600.0
-        if d_level < 0.01 and d_range < 0.01 and hours_since_prev > 5.5:
-            flags.append("WARN: level & range frozen over the last check window")
+        d_level = snap.get("level", {}).get("last", 0.0) - prev_snap.get("level", {}).get("last", 0.0)
+        reward_now = snap.get("reward", {}).get("med")
+        reward_before = prev_snap.get("reward", {}).get("med")
+        err_now = snap.get("err_xy", {}).get("med")
+        err_before = prev_snap.get("err_xy", {}).get("med")
+        if d_level > 0.05 and reward_now is not None and reward_before is not None:
+            if reward_now < 0.9 * reward_before:
+                flags.append(f"WARN: terrain +{d_level:.3f}, reward {reward_before:.3f} -> {reward_now:.3f}")
+        if d_level > 0.05 and err_now is not None and err_before is not None:
+            if err_now > 1.15 * err_before:
+                flags.append(f"WARN: terrain +{d_level:.3f}, err_xy {err_before:.3f} -> {err_now:.3f}")
 
     lines = [f"## {now_str()} check", ""]
     lines.append(f"- process: {'ALIVE (pid ' + ', '.join(map(str, pids)) + ')' if alive else 'DEAD'}")
