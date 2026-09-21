@@ -64,6 +64,9 @@ _build
 # Teleop Recorded Dataset
 datasets
 
+# Agent/session transcripts (generated)
+session-ses_*.md
+
 # Deploy
 *.pt
 *.obj

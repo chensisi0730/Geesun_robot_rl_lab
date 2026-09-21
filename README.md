@@ -43,7 +43,7 @@
   - 使用已安装 Isaac Lab 的 Python 解释器，以可编辑（editable）模式安装本库：
 
     ```bash
-    conda activate env_isaaclab_sim5
+    conda activate env_isaaclab_sim51
     ./unitree_rl_lab.sh -i
     # 重启 shell 以使环境变更生效。
     ```
@@ -83,17 +83,17 @@
     ```bash
     ./unitree_rl_lab.sh -l # 比 isaaclab 启动更快
     ```
-  - 训练 GO2 复杂地形行走策略：
+## 训练 GO2 复杂地形行走策略：
 
     ```bash
     set -o pipefail
 
     # GO2 复杂地形训练，新建训练运行
-    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/train.py --headless \
+    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
         --task Unitree-Go2-Velocity --num_envs 12000 2>&1 | tee /tmp/train_go2.log
 
     # 从已有运行继续训练时，再添加 --resume 和 --load_run
-    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/train.py --headless \
+    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
         --task Unitree-Go2-Velocity --num_envs 12000 \
         --resume --load_run RUN_ID 2>&1 | tee /tmp/train_go2_resume.log
     ```
@@ -112,7 +112,7 @@
     ./unitree_rl_lab.sh -p --task Unitree-Go2-Velocity --load_run RUN_ID
 
 
-    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py \
+    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
         --task Unitree-Go2-Velocity
     ```
 
@@ -136,26 +136,26 @@
 
 ```bash
 # 平地名义工况，自动加载最新 checkpoint
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
     --task Unitree-Go2-Velocity \
     --terrain flat \
     --steps 500
 
 # 指定 checkpoint 时，将 RUN_ID 和 checkpoint 文件名替换为实际值
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
     --task Unitree-Go2-Velocity \
     --terrain flat \
     --checkpoint logs/rsl_rl/unitree_go2_velocity/RUN_ID/model_7300.pt \
     --steps 500
 
 # 复杂地形压力测试，推荐用于电机选型参考
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
     --task Unitree-Go2-Velocity \
     --terrain complex \
     --steps 1000
 
 # 使用任务的 play 配置地形，省略 checkpoint 时自动选择最新结果
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity --terrain play
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity --terrain play
 ```
 
 **参数：**
@@ -202,11 +202,11 @@ conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py --task Un
 
 ```bash
 # 自动选择最新 checkpoint
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
     --task Unitree-Go2-Velocity
 
 # 或指定训练运行目录
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
     --task Unitree-Go2-Velocity --load_run RUN_ID
 ```
 
@@ -220,20 +220,20 @@ conda run -n env_isaaclab_sim5 python scripts/rsl_rl/play.py \
 
 ```bash
 # 平地基线
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
     --task Unitree-Go2-Velocity \
     --terrain flat \
     --steps 500
 
 # 复杂地形压力测试
-conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
     --task Unitree-Go2-Velocity \
     --terrain complex \
     --steps 1000
 
 # 分地形定位短板
 for terrain in random_rough boxes stairs; do
-    conda run -n env_isaaclab_sim5 python scripts/rsl_rl/test_flat_walk.py \
+    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
         --task Unitree-Go2-Velocity --terrain "$terrain" --steps 1000
 done
 ```
@@ -314,7 +314,7 @@ grep -c 'Patch buffer overflow' /tmp/train_go2.log
 **用法：**
 
 ```bash
-conda activate env_isaaclab_sim5
+conda activate env_isaaclab_sim51
 python scripts/geesun_dog/move_geesun_dog.py                    # 图形界面，2000 步
 python scripts/geesun_dog/move_geesun_dog.py --num_steps 0      # 一直运行，直到关闭窗口
 python scripts/geesun_dog/move_geesun_dog.py --headless --num_steps 300     # 无界面快速检查

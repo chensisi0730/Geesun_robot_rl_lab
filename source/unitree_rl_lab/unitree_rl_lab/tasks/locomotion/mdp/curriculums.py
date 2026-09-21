@@ -113,7 +113,7 @@ def fixed_lin_vel_cmd_level(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> t
 
 
 def velocity_command_ranges(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> dict[str, float]:
-    """Expose all frozen stage-1 command bounds in TensorBoard."""
+    """Expose all current command bounds (lin x/y and yaw) in TensorBoard."""
     del env_ids
     ranges = env.command_manager.get_term("base_velocity").cfg.ranges
     return {
@@ -121,18 +121,26 @@ def velocity_command_ranges(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> d
         "x_max": float(ranges.lin_vel_x[1]),
         "y_min": float(ranges.lin_vel_y[0]),
         "y_max": float(ranges.lin_vel_y[1]),
+        "z_min": float(ranges.ang_vel_z[0]),
+        "z_max": float(ranges.ang_vel_z[1]),
     }
 
 
 def _ensure_gate_state(command_term) -> None:
-    """Lazily attach the rolling-window accumulators used by the stage-2 gate."""
+    """Lazily attach the rolling-window accumulators used by the gated curricula.
+
+    The linear (xy) and yaw gates are tracked independently so a hard-to-learn yaw command
+    cannot freeze the linear-velocity range (and vice versa).
+    """
     if not hasattr(command_term, "_gate_total"):
         command_term._gate_total = 0.0
-        command_term._gate_success = 0.0
         command_term._gate_survived = 0.0
+        command_term._gate_lin_success = 0.0
+        command_term._gate_yaw_success = 0.0
         command_term._gate_err_xy = 0.0
         command_term._gate_err_yaw = 0.0
         command_term._gate_streak = 0
+        command_term._gate_yaw_streak = 0
         command_term._gate_loaded = False
 
 
@@ -151,6 +159,8 @@ def _load_gate_state(command_term, state_file: str | None) -> None:
             command_term.cfg.ranges.lin_vel_x = tuple(saved["lin_vel_x"])
         if "lin_vel_y" in saved:
             command_term.cfg.ranges.lin_vel_y = tuple(saved["lin_vel_y"])
+        if "ang_vel_z" in saved:
+            command_term.cfg.ranges.ang_vel_z = tuple(saved["ang_vel_z"])
         print(f"[INFO] Restored gated velocity curriculum ranges from {state_file}: {saved}")
     except Exception as exc:  # a corrupt sidecar must never abort training
         print(f"[WARN] Could not read curriculum state {state_file}: {exc!r}")
@@ -166,6 +176,7 @@ def _save_gate_state(command_term, state_file: str | None) -> None:
             "ranges": {
                 "lin_vel_x": [float(ranges.lin_vel_x[0]), float(ranges.lin_vel_x[1])],
                 "lin_vel_y": [float(ranges.lin_vel_y[0]), float(ranges.lin_vel_y[1])],
+                "ang_vel_z": [float(ranges.ang_vel_z[0]), float(ranges.ang_vel_z[1])],
             },
             "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -182,6 +193,7 @@ def gated_lin_vel_cmd_levels(
     command_name: str = "base_velocity",
     state_file: str | None = None,
     lin_increment: float = 0.05,
+    yaw_increment: float = 0.1,
     success_xy: float = 0.25,
     success_yaw: float = 0.35,
     min_success_rate: float = 0.90,
@@ -189,19 +201,28 @@ def gated_lin_vel_cmd_levels(
     min_episodes: int = 4000,
     hold: int = 2,
 ) -> dict[str, float]:
-    """Widen the linear-velocity command range only after the policy reliably tracks and survives.
+    """Gated curriculum for the linear-velocity (xy) and yaw command ranges.
 
-    Stage 2 gate. Statistics are accumulated over a window that spans at least
-    ``min_env_steps`` environment steps (so the window is a fixed *training duration* rather
-    than a number of episodes, which would be tiny with 22000 parallel envs) and at least
-    ``min_episodes`` finished episodes. An episode counts as a success only if the robot
-    survived to ``time_out`` *and* its episode-mean xy/yaw tracking error stayed below
-    ``success_xy``/``success_yaw``. The x range is widened by ``lin_increment`` once the
-    success rate stays at or above ``min_success_rate`` for ``hold`` consecutive windows; the
-    y range is intentionally left frozen so the two axes are decoupled. The window restarts
-    after every evaluation, which doubles as the settle period after an increment. Advancing
-    on failures/falls (not on raw reward) is what keeps the curriculum from outrunning the
-    policy (see ``doc/training_monitoring.md``).
+    Statistics are accumulated over a window that spans at least ``min_env_steps`` environment
+    steps (a fixed *training duration* rather than a number of episodes, which would be tiny
+    with thousands of parallel envs) and at least ``min_episodes`` finished episodes. An
+    episode counts as a success for an axis when the robot survived to ``time_out`` *and* its
+    episode-mean tracking error on that axis stayed below the threshold.
+
+    The two axes are gated **independently** (the previous combined gate froze the whole
+    curriculum whenever yaw tracking lagged, which is exactly what happened to the fresh Go2
+    run):
+
+    * x range widens by ``lin_increment`` after ``hold`` consecutive windows with linear
+      success rate / time-out rate >= ``min_success_rate`` and mean ``error_vel_xy`` below
+      ``success_xy`` (y range stays frozen, keeping the two linear axes decoupled);
+    * yaw range (``ang_vel_z``) widens by ``yaw_increment`` after ``hold`` consecutive windows
+      with yaw success rate / time-out rate >= ``min_success_rate`` and mean ``error_vel_yaw``
+      below ``success_yaw``.
+
+    The window restarts after every evaluation, which doubles as the settle period after an
+    increment. Advancing on tracking + survival (not on raw reward) is what keeps the
+    curriculum from outrunning the policy (see ``doc/training_monitoring.md``).
 
     The current range is persisted to ``state_file`` (when given) because the rsl-rl
     checkpoint does not store command ranges.
@@ -223,41 +244,59 @@ def gated_lin_vel_cmd_levels(
     valid = env.episode_length_buf[env_ids] > 0
     time_outs = getattr(env, "reset_time_outs", None)
     survived = torch.ones_like(valid) if time_outs is None else time_outs[env_ids].bool()
-    success = survived & (err_xy < success_xy) & (err_yaw < success_yaw)
+    lin_success = survived & (err_xy < success_xy)
+    yaw_success = survived & (err_yaw < success_yaw)
 
     command_term._gate_total += float(valid.sum().item())
-    command_term._gate_success += float((success & valid).sum().item())
     command_term._gate_survived += float((survived & valid).sum().item())
+    command_term._gate_lin_success += float((lin_success & valid).sum().item())
+    command_term._gate_yaw_success += float((yaw_success & valid).sum().item())
     command_term._gate_err_xy += float(err_xy[valid].sum().item())
     command_term._gate_err_yaw += float(err_yaw[valid].sum().item())
 
     elapsed = env.common_step_counter - command_term._gate_last_eval
     if elapsed >= min_env_steps and command_term._gate_total >= float(min_episodes):
-        success_rate = command_term._gate_success / command_term._gate_total
-        time_out_rate = command_term._gate_survived / command_term._gate_total
-        mean_err_xy = command_term._gate_err_xy / command_term._gate_total
-        mean_err_yaw = command_term._gate_err_yaw / command_term._gate_total
-        if (
-            success_rate >= min_success_rate
-            and time_out_rate >= min_success_rate
-            and mean_err_xy <= success_xy
-            and mean_err_yaw <= success_yaw
-        ):
+        total = command_term._gate_total
+        time_out_rate = command_term._gate_survived / total
+        lin_rate = command_term._gate_lin_success / total
+        yaw_rate = command_term._gate_yaw_success / total
+        mean_err_xy = command_term._gate_err_xy / total
+        mean_err_yaw = command_term._gate_err_yaw / total
+
+        if lin_rate >= min_success_rate and time_out_rate >= min_success_rate and mean_err_xy <= success_xy:
             command_term._gate_streak += 1
         else:
             command_term._gate_streak = 0
+        if yaw_rate >= min_success_rate and time_out_rate >= min_success_rate and mean_err_yaw <= success_yaw:
+            command_term._gate_yaw_streak += 1
+        else:
+            command_term._gate_yaw_streak = 0
+
+        advanced = False
         if command_term._gate_streak >= hold:
             ranges.lin_vel_x = (
                 max(float(ranges.lin_vel_x[0]) - lin_increment, float(limit_ranges.lin_vel_x[0])),
                 min(float(ranges.lin_vel_x[1]) + lin_increment, float(limit_ranges.lin_vel_x[1])),
             )
             command_term._gate_streak = 0
+            advanced = True
             print(f"[INFO] Velocity curriculum advanced to lin_vel_x={tuple(ranges.lin_vel_x)}")
+        if command_term._gate_yaw_streak >= hold:
+            ranges.ang_vel_z = (
+                max(float(ranges.ang_vel_z[0]) - yaw_increment, float(limit_ranges.ang_vel_z[0])),
+                min(float(ranges.ang_vel_z[1]) + yaw_increment, float(limit_ranges.ang_vel_z[1])),
+            )
+            command_term._gate_yaw_streak = 0
+            advanced = True
+            print(f"[INFO] Yaw curriculum advanced to ang_vel_z={tuple(ranges.ang_vel_z)}")
+        if advanced:
             _save_gate_state(command_term, state_file)
+
         command_term._gate_last_eval = env.common_step_counter
         command_term._gate_total = 0.0
-        command_term._gate_success = 0.0
         command_term._gate_survived = 0.0
+        command_term._gate_lin_success = 0.0
+        command_term._gate_yaw_success = 0.0
         command_term._gate_err_xy = 0.0
         command_term._gate_err_yaw = 0.0
 
@@ -265,11 +304,14 @@ def gated_lin_vel_cmd_levels(
     return {
         "x_max": float(ranges.lin_vel_x[1]),
         "y_max": float(ranges.lin_vel_y[1]),
-        "success_rate": command_term._gate_success / window,
+        "z_max": float(ranges.ang_vel_z[1]),
+        "success_rate": command_term._gate_lin_success / window,
+        "yaw_success_rate": command_term._gate_yaw_success / window,
         "time_out_rate": command_term._gate_survived / window,
         "mean_err_xy": command_term._gate_err_xy / window,
         "mean_err_yaw": command_term._gate_err_yaw / window,
         "streak": float(command_term._gate_streak),
+        "yaw_streak": float(command_term._gate_yaw_streak),
     }
 
 

@@ -38,17 +38,21 @@ class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 @configclass
 class UnitreeGo2PPORunnerCfg(BasePPORunnerCfg):
-    """Stability-tuned PPO for the Go2 velocity task.
+    """PPO for the Go2 velocity task, tuned between the shared config and a too-conservative one.
 
     The shared :class:`BasePPORunnerCfg` was too aggressive once the command curriculum
-    widened: the entropy bonus kept growing the exploration noise, the KL-adaptive LR kept
-    collapsing to its 1e-5 floor, and the value function diverged (see the run analysis in
-    ``doc/training_monitoring.md``). These overrides reduce the update magnitude and the
-    exploration pressure so the gated curriculum can advance without destabilising.
+    widened (entropy bonus kept growing the exploration noise, the KL-adaptive LR collapsed to
+    its 1e-5 floor, and the value function diverged). An earlier "stability-tuned" variant went
+    too far the other way: with ``init_noise_std=0.5`` and ``entropy_coef=0.005`` a *fresh*
+    run collapsed its exploration noise within a few hundred iterations and got stuck in a
+    yaw-ignoring local optimum (``error_vel_yaw`` ≈ 0.9 vs. the 0.35 gate, velocity range
+    frozen at ±0.25 m/s). The values below restore enough exploration/learning pressure to
+    escape that optimum while keeping the moderate update size and mini-batch count that
+    stabilise late training (see the curve analysis in ``doc/training_monitoring.md``).
     """
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.5,
+        init_noise_std=0.8,
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
@@ -57,13 +61,13 @@ class UnitreeGo2PPORunnerCfg(BasePPORunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.005,
-        num_learning_epochs=3,
+        entropy_coef=0.02,
+        num_learning_epochs=4,
         num_mini_batches=8,
-        learning_rate=3.0e-4,
+        learning_rate=8.0e-4,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
-        desired_kl=0.005,
-        max_grad_norm=0.5,
+        desired_kl=0.01,
+        max_grad_norm=0.8,
     )

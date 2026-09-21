@@ -194,7 +194,7 @@ class CommandsCfg:
         rel_standing_envs=0.1,
         debug_vis=True,
         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.25, 0.25), lin_vel_y=(-0.25, 0.25), ang_vel_z=(-1, 1)
+            lin_vel_x=(-0.25, 0.25), lin_vel_y=(-0.25, 0.25), ang_vel_z=(-0.5, 0.5)
         ),
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
             lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.4, 0.4), ang_vel_z=(-1.0, 1.0)
@@ -274,7 +274,7 @@ class RewardsCfg:
         func=mdp.track_lin_vel_xy_exp, weight=1.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
     track_ang_vel_z = RewTerm(
-        func=mdp.track_ang_vel_z_exp, weight=0.75, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
+        func=mdp.track_ang_vel_z_exp, weight=1.0, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
 
     # -- base
@@ -288,7 +288,7 @@ class RewardsCfg:
     energy = RewTerm(func=mdp.energy, weight=-2e-5)
 
     # -- robot
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.5)
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-3.00)
 
     joint_pos = RewTerm(
         func=mdp.joint_position_penalty,
@@ -361,14 +361,16 @@ class CurriculumCfg:
 
     terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_strict)
     terrain_performance_by_type = CurrTerm(func=mdp.terrain_performance_by_type)
-    # Stage 2 gate: hold the linear command range until tracking + survival are solid, then
-    # widen x by a small step (y stays frozen). The advanced range is persisted so a crash
-    # or auto-resume does not silently revert the curriculum.
+    # Gated command curriculum: hold the linear (xy) and yaw ranges until tracking + survival
+    # are solid, then widen x by a small step (y stays frozen) and/or ang_vel_z. The two axes
+    # are gated independently so a lagging yaw policy cannot freeze the linear range. The
+    # advanced ranges are persisted so a crash or auto-resume does not silently revert them.
     lin_vel_cmd_levels = CurrTerm(
         func=mdp.gated_lin_vel_cmd_levels,
         params={
             "state_file": "logs/rsl_rl/unitree_go2_velocity/curriculum_state.json",
             "lin_increment": 0.05,
+            "yaw_increment": 0.1,
             "success_xy": 0.25,
             "success_yaw": 0.35,
             "min_success_rate": 0.90,

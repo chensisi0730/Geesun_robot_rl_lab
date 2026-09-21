@@ -13,14 +13,14 @@
    当最新 run 目录出现晚于停止时刻的 tfevents 写入（人工已重启）时标记自动清除，恢复正常崩溃自愈。
    防御性保护：只杀匹配到的进程组，pgid≤1 与监控自身进程组永不触碰；
 3. **TensorBoard 快照**：课程、速度误差、reward、终止率、value loss、学习率、噪声和 FPS 最近 200 迭代；
-4. **异常标志**：进程死亡、overflow、time_out <0.85、bad_orientation >2%、LR 长期在下限、地形提升时 reward 下跌或误差上升，以及**价值函数发散保护**：最近 200 迭代 `Loss/value_function` 中位数 > 100 时判定为发散，立即终止训练并写 `stop_marker`（抑制自动 resume，需人工处理），避免反复复活一个已经坏掉的 run。
+4. **异常标志**：进程死亡、overflow、time_out <0.85、bad_orientation >2%、LR 长期在下限、地形提升时 reward 下跌或误差上升，以及**价值函数发散保护**：最近 200 迭代 `Loss/value_function` 中位数 > 100 时判定为发散，交给 autotune 将 PPO 学习率减半（下限 `2e-4`），随后 fresh 重训，避免续训已经发散的 checkpoint。
 
 启动方式（与训练进程解耦，nohup 常驻）：
 
 ```bash
 cd /home/css/work/unitree/rl/Geesun_robot_rl_lab
 nohup bash -c 'while true; do \
-  /home/css/miniconda3/envs/env_isaaclab_sim5/bin/python scripts/monitor_tb_check.py \
+  /home/css/miniconda3/envs/env_isaaclab_sim51/bin/python scripts/monitor_tb_check.py \
   >> outputs/monitor/monitor.log 2>&1; sleep 14400; done' >/dev/null 2>&1 &
 ```
 
@@ -30,7 +30,7 @@ nohup bash -c 'while true; do \
 - `outputs/monitor/state.json`：日志偏移量、上次快照、上次自动重启时间、`stop_marker` 停止标记（删除 `stop_marker` 键或删整个文件即重置基线）；
 - `outputs/monitor/monitor.log`：每次检查的单行摘要。
 
-手动运行一次：`conda run -n env_isaaclab_sim5 python scripts/monitor_tb_check.py`
+手动运行一次：`conda run -n env_isaaclab_sim51 python scripts/monitor_tb_check.py`
 
 注意：刚 resume 的前 ~50 个迭代存在启动瞬态（time_out/mean_reward 偏低），阈值规则在样本
 数 <50 时不触发告警，属正常现象，无需干预。
@@ -44,21 +44,60 @@ nohup bash -c 'while true; do \
 4. 人工重新启动训练（新 run）——监控检测到新 run 的 tfevents 写入后自动清除 `stop_marker`，
    恢复正常崩溃自愈；在此之前进程死亡只告警不自动重启。
 
+### 1.1 全曲线报告 + 自动调参闭环（autotune）
+
+- **全曲线**：每次检查把**所有** TensorBoard scalar（不只关键项）写入
+  `outputs/monitor/curves.md`：窗口 min/med/max/last 与窗口内相对变化（trend），用于快速定位
+  哪些项仍在涨、哪些已平台。
+- **自动调参**：训练存活且无 `stop_marker` 时，监控以**子进程**方式调用
+  `scripts/autotune.py`（因此随时编辑 `autotune.py` 的旋钮/规则，下一次检查即生效）：
+  1. 读取最新 run 的全曲线，诊断：平台（`plateau`）、yaw/lin 门控卡住、探索塌缩
+     （`mean_noise_std<0.2`）、LR 贴底、跌倒率上升和曲线恶化（`degrading`）；
+  2. 按 `decide()` 中的**优先级规则**每次只改**一个**小旋钮（便于消融），旋钮注册表 `KNOBS`
+     覆盖 PPO 超参、课程阈值/增量、奖励权重；
+  3. 停止当前训练 → 备份并改写配置源码（备份 + unified diff + `py_compile` 校验）
+     → 重启：**PPO 类旋钮 `--resume` 续训**，**奖励/课程/重置噪声类旋钮全新训练**（`restart` 字段）。
+     修改、编译或启动失败时自动恢复源码，并尝试从原 run 最新 checkpoint 恢复训练；价值函数发散时
+     学习率变更也使用 fresh 重训。
+- **安全护栏**：`MIN_START_ITERS=1500` 之前不动；两次动作间隔 ≥ `MIN_ITERS_BETWEEN_ACTIONS=600`
+  迭代且墙钟时间 ≥ 3 小时；迭代冷却按 run 独立计算，fresh run 的 step 归零不会被旧 run 卡住；
+  全局上限 `MAX_ACTIONS=8`，每个旋钮有独立预算；`init_noise_std`/`entropy_coef`/`desired_kl`
+  等"加压"规则还额外要求 **plateau 且课程未解锁到上限**，避免打扰已收敛的良好 run。
+- **恶化判据**：使用最近 400 迭代前/后四分位数的中位数比较。单条噪声曲线不会触发重训；需
+  reward 下降 ≥20% 且至少一项（xy/yaw 误差上升 ≥15%、time_out 下降 ≥10%、bad_orientation
+  上升 ≥25%）同时恶化，或至少两项非 reward 指标同时恶化。触发后按主要恶化项每次只修改一个
+  有界超参，顺序执行停止训练、备份/修改/语法校验、fresh 或 resume 重训，并记录完整 ledger。
+- **人工控制**：
+  - 关闭自动调参：`touch outputs/autotune/DISABLED`（删除即恢复）；
+  - 只看计划不改：`python scripts/autotune.py --dry-run`；
+  - 查看/调整旋钮当前值：`python scripts/autotune.py --list`；
+  - 回滚最近一次改动并重启：`python scripts/autotune.py --rollback`；
+  - 审计：`outputs/autotune/ledger.jsonl`（逐条动作/旧值/新值/原因/备份路径）、
+    `outputs/autotune/state.json`、源码备份在 `outputs/autotune/backups/`。
+
 ## 2. TensorBoard 判读要点
 
 - `Metrics/base_velocity/error_vel_*` 和课程门控均使用 episode 逐步误差真均值。课程在 command reset
   之前执行，因此直接读取 running sums；读取尚未结算的 `metrics` 会得到旧零值并导致错误升级。
 - `Episode_Reward` 对短 episode 会低估，不作为收敛主判据。核心判据：
   velocity error、time_out、LR、terrain/speed curriculum 进度、日志 overflow 计数。
-- GO2 线速度命令范围由 `gated_lin_vel_cmd_levels` 控制（`velocity_env_cfg.py`）：初始固定
-  `±0.25 m/s`，统计窗口按**训练时长**而非回合数定义（`min_env_steps=12000` 个环境步 ≈ 500 迭代，
-  且 ≥ `min_episodes=4000` 个回合），窗口内**成功率**（存活到 time_out 且回合平均
-  `error_vel_xy < 0.25`、`error_vel_yaw < 0.35`）连续 `hold=2` 个窗口 ≥ `0.9` 时，才把 x 范围
-  按 `+0.05 m/s` 放宽一次；y 范围保持不变（两轴解耦）。**不要**再按 track reward 单指标升级——
-  旧实现每 ~2.7h 无条件 +0.1，速度涨到 ±0.65 时价值函数发散（value_loss 峰值 1.7e5），地形课程
-  随之退化。升级后的范围写入 `logs/rsl_rl/unitree_go2_velocity/curriculum_state.json`
+- GO2 命令范围由 `gated_lin_vel_cmd_levels`（`velocity_env_cfg.py`）控制：线速度初始
+  `±0.25 m/s`、偏航初始 `±0.5 rad/s`。统计窗口按**训练时长**而非回合数定义
+  （`min_env_steps=12000` 个环境步 且 ≥ `min_episodes=4000` 个回合）。**线性轴与偏航轴独立门控**
+  （旧实现把 xy 与 yaw 合成一个成功率，yaw 跟不上时整个课程死锁，fresh Go2 run 就是这样卡住的）：
+  - x 范围：窗口内线性成功率（存活到 time_out 且 `error_vel_xy < 0.25`）≥ `0.9` 且 time_out 率
+    ≥ `0.9`，连续 `hold=2` 个窗口后按 `+0.05 m/s` 放宽；y 范围始终冻结；
+  - 偏航范围：窗口内偏航成功率（存活且 `error_vel_yaw < 0.35`）≥ `0.9` 且 time_out 率 ≥ `0.9`，
+    连续 `hold=2` 个窗口后 `ang_vel_z` 按 `+0.1 rad/s` 放宽，上限 `±1.0 rad/s`。
+  **不要**再按 track reward 单指标升级——旧实现每 ~2.7h 无条件 +0.1，速度涨到 ±0.65 时价值函数
+  发散（value_loss 峰值 1.7e5），地形课程随之退化。升级后的范围（`lin_vel_x`/`lin_vel_y`/
+  `ang_vel_z`）写入 `logs/rsl_rl/unitree_go2_velocity/curriculum_state.json`
   （checkpoint 不保存命令范围），崩溃/自动 resume 不会悄悄回退课程；fresh run 由 train.py 删除该文件。
   注意：用大量并行 env（22000）时若把窗口设成回合计会瞬间跑满，所以这里必须用 `min_env_steps`。
+- PPO 探索配置（`agents/rsl_rl_ppo_cfg.py:UnitreeGo2PPORunnerCfg`）需保留足够探索压力：
+  `init_noise_std=0.8`、`entropy_coef=0.01`、`desired_kl=0.01`、`learning_rate=8e-4`。早期一版把
+  这些减半（0.5/0.005/0.005/3e-4），fresh run 在数百迭代内探索噪声就塌缩到 ~0.1，卡在「忽略 yaw」
+  的局部最优（`error_vel_yaw≈0.9`）。
 - **地形等级同样不在 checkpoint 中**：resume 后地形按 `min/max_init_terrain_level`（GO2 为 0–2）
   重新初始化，不回滚到重启前的平均等级。最高等级环境会随机回到较低行，因此平均值不必达到 8–9。
 - GO2 的严格地形课程使用 `0.22/0.30` 升级阈值和 `0.40/0.45` 降级阈值，并按 terrain type 记录结果。
@@ -73,7 +112,8 @@ nohup bash -c 'while true; do \
 tensorboard --logdir logs/rsl_rl/unitree_go2_velocity/
 ```
 
-- `Curriculum/lin_vel_cmd_levels/x_max` 只在门控达标时阶梯上升，`.../success_rate` 应稳定在高位；
+- `Curriculum/lin_vel_cmd_levels/x_max`（线速度）与 `.../z_max`（偏航）只在各自门控达标时阶梯上升，
+  `.../success_rate` 与 `.../yaw_success_rate` 应稳定在高位；
 - 各 `Curriculum/terrain_performance_by_type/*` 无明显退化；
 - `time_out >= 0.99`、`bad_orientation <= 0.01`、`error_vel_xy <= 0.25`、`error_vel_yaw <= 0.35`；
 - 训练日志 `grep -c 'Patch buffer overflow' <log>` 为 0（或远低于 v3 的 98145）。
@@ -82,7 +122,7 @@ tensorboard --logdir logs/rsl_rl/unitree_go2_velocity/
 
 ```bash
 cd /home/css/work/unitree/rl/Geesun_robot_rl_lab
-source /home/css/miniconda3/etc/profile.d/conda.sh && conda activate env_isaaclab_sim5
+source /home/css/miniconda3/etc/profile.d/conda.sh && conda activate env_isaaclab_sim51
 python scripts/rsl_rl/play.py --headless --task Unitree-Go2-Velocity \
   --num_envs 22000 --load_run <run_name> --checkpoint model_<iter>.pt
 ```

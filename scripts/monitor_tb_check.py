@@ -16,10 +16,17 @@ Per check it
      auto-resumed (marker auto-clears once a newer run writes TensorBoard data);
   3. snapshots the key TensorBoard curves (last 200 iterations) of the newest run dir;
   4. raises anomaly flags against the previous snapshot (terrain promotion with degraded
-     tracking/reward, LR pinned at the floor, termination increase, new PhysX overflow).
+     tracking/reward, LR pinned at the floor, termination increase, new PhysX overflow);
+  5. writes a full table of *every* TensorBoard scalar with window stats + trend to
+     outputs/monitor/curves.md;
+  6. while the run is alive and healthy, invokes scripts/autotune.py as a subprocess: it
+     diagnoses plateaus/stuck curricula and may edit one config knob and relaunch training
+     (see the autotune module docstring). Editing autotune.py takes effect on the next check.
 
 Human-readable report: outputs/monitor/report.md (appended).
+All-curve table: outputs/monitor/curves.md (overwritten each check).
 Persistent state (log offsets, previous snapshot, last auto-resume time, stop marker): outputs/monitor/state.json.
+Auto-tuner ledger/state/backups: outputs/autotune/ (create outputs/autotune/DISABLED to switch it off).
 """
 
 from __future__ import annotations
@@ -34,11 +41,17 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import tb_curves as tbc  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[1]
 RUNS_ROOT = REPO / "logs" / "rsl_rl" / "unitree_go2_velocity"
 MON_DIR = REPO / "outputs" / "monitor"
 STATE_PATH = MON_DIR / "state.json"
 REPORT_PATH = MON_DIR / "report.md"
+CURVES_PATH = MON_DIR / "curves.md"
+AUTOTUNE_SCRIPT = REPO / "scripts" / "autotune.py"
+AUTO_TUNE = True  # master switch (the autotuner also honours outputs/autotune/DISABLED)
 
 PY = sys.executable
 TASK = "Unitree-Go2-Velocity"
@@ -54,6 +67,8 @@ KEY_TAGS = {
     "Curriculum/terrain_levels": "level",
     "Curriculum/lin_vel_cmd_levels/x_max": "range",
     "Curriculum/lin_vel_cmd_levels/success_rate": "gate_success",
+    "Curriculum/lin_vel_cmd_levels/z_max": "yaw_range",
+    "Curriculum/lin_vel_cmd_levels/yaw_success_rate": "yaw_gate_success",
     "Metrics/base_velocity/error_vel_xy": "err_xy",
     "Metrics/base_velocity/error_vel_yaw": "err_yaw",
     "Train/mean_reward": "reward",
@@ -65,8 +80,8 @@ KEY_TAGS = {
     "Perf/total_fps": "fps",
 }
 SNAP_KEYS = (
-    "level", "range", "gate_success", "err_xy", "err_yaw", "reward", "time_out",
-    "bad_orientation", "value_loss", "lr", "noise_std", "fps",
+    "level", "range", "gate_success", "yaw_range", "yaw_gate_success", "err_xy", "err_yaw",
+    "reward", "time_out", "bad_orientation", "value_loss", "lr", "noise_std", "fps",
 )
 
 
@@ -301,30 +316,27 @@ def main() -> None:
         pids = train_pids()
         alive = bool(pids)
 
-    # Read the curves before deciding whether to auto-resume: a diverged run must not be
-    # resurrected (the old monitor kept restarting a value function that had blown up).
+    # Read curves before deciding whether to auto-resume or invoke the auto-tuner.
     snap: dict = {}
+    tb: dict = {}
     if run_dir is not None:
         try:
-            snap = snapshot(load_tb(run_dir))
+            tb = load_tb(run_dir)
+            snap = snapshot(tb)
+            if tb:
+                CURVES_PATH.parent.mkdir(parents=True, exist_ok=True)
+                CURVES_PATH.write_text(
+                    tbc.markdown_table(tb, LAST_N, title=f"{run_dir.name} - all scalar curves")
+                )
         except Exception as e:  # keep the monitor alive even if TB is unreadable
             actions.append(f"TB read failed: {e!r}")
 
     vl = snap.get("value_loss", {})
-    if vl.get("n", 0) >= 50 and vl.get("med", 0.0) > VALUE_LOSS_ABORT:
+    value_diverged = vl.get("n", 0) >= 50 and vl.get("med", 0.0) > VALUE_LOSS_ABORT
+    if value_diverged:
         reason = f"value_function loss median {vl['med']} > {VALUE_LOSS_ABORT} (diverged)"
         flags.append(f"CRITICAL: {reason}")
-        if alive:
-            actions.append("AUTO-STOP on value-function divergence: " + stop_training(reason))
-            pids = train_pids()
-            alive = bool(pids)
-        if not state.get("stop_marker"):
-            state["stop_marker"] = {
-                "at": time.time(),
-                "reason": reason,
-                "evidence": f"value_loss last200 med={vl['med']}",
-            }
-        actions.append("auto-resume SUPPRESSED until manual restart (value-function divergence)")
+        actions.append("value-function divergence delegated to autotune for LR reduction + fresh restart")
 
     if not alive:
         flags.append("CRITICAL: training process DEAD")
@@ -362,6 +374,30 @@ def main() -> None:
         if d_level > 0.05 and err_now is not None and err_before is not None:
             if err_now > 1.15 * err_before:
                 flags.append(f"WARN: terrain +{d_level:.3f}, err_xy {err_before:.3f} -> {err_now:.3f}")
+
+    # Auto-tuner: only while the run is alive and no stop marker is set. It runs
+    # as a subprocess so edits to scripts/autotune.py are picked up on the next check, and it
+    # enforces its own cooldowns and action budgets.
+    if AUTO_TUNE and alive and not state.get("stop_marker") and run_dir is not None:
+        try:
+            autotune_cmd = [PY, str(AUTOTUNE_SCRIPT), "--run-dir", str(run_dir)]
+            if value_diverged:
+                autotune_cmd.append("--force")
+            r = subprocess.run(
+                autotune_cmd,
+                capture_output=True, text=True, timeout=900, cwd=str(REPO),
+            )
+            out = (r.stdout or "").strip().splitlines()
+            summary = next((line for line in out if line.startswith("flags:")), None)
+            if summary:
+                actions.append("autotune diagnosis: " + summary.removeprefix("flags: "))
+            actions.append("autotune: " + (out[-1] if out else f"exit {r.returncode}"))
+            if r.returncode != 0 and r.stderr:
+                actions.append("autotune stderr: " + r.stderr.strip().splitlines()[-1][:200])
+            pids = train_pids()
+            alive = bool(pids)
+        except Exception as e:
+            actions.append(f"autotune failed: {e!r}")
 
     lines = [f"## {now_str()} check", ""]
     lines.append(f"- process: {'ALIVE (pid ' + ', '.join(map(str, pids)) + ')' if alive else 'DEAD'}")
