@@ -300,26 +300,23 @@ grep -c 'Patch buffer overflow' /tmp/train_go2.log
 
 ## Geesun Dog 导入与全关节运动演示（dog1）
 
-`scripts/geesun_dog/move_geesun_dog.py` 将自研 Geesun 四足机器人（`unitree_model/geesun_dog/geesun-dog/dog1/urdf/dog1.urdf`，4 条腿 x hip/thigh/calf 共 12 个关节）导入 Isaac Sim，并以对角步态（trot）正弦曲线驱动全部关节运动，便于直观检查整条运动链。
+`scripts/geesun_dog/move_geesun_dog.py` 将自研 Geesun 四足机器人（4 条腿 x hip/thigh/calf 共 12 个关节）导入 Isaac Sim，并以对角步态（trot）正弦曲线驱动全部关节运动，便于直观检查整条运动链。资产位于 `geesun_dog_urdf/geesun-dog/dog1/`：优先使用 9/21 更新的 `urdf/dog921.urdf`（真实网格与关节限位），缺失时自动回退旧版 `urdf/dog1.urdf`，方便消融对照。
 
 **自动修复的资产问题**（不修改原始资产，修复副本写入 `/tmp/IsaacLab/geesun_dog/`）：
 
 | SolidWorks 导出 URDF 中的问题 | 自动修复方式 |
 |---|---|
-| 网格以 `package://dog1/meshes/...` 引用（无 ROS 无法解析） | 重写为绝对路径 |
-| `Link_fr/fl/hl/hr_hip.STL` 为空文件（仅 80 字节头、0 个三角形），导入器会丢弃/崩溃 | 自动生成占位圆柱网格（半径 0.035 m、长 0.08 m、沿髋关节轴） |
-| 所有关节 `limit lower/upper/effort/velocity` 均为 0，机器人无法运动 | 替换为合理范围（hip ±0.8，thigh -2.0~2.5 / 镜像，calf -2.5~0.5 / 镜像），effort=100，velocity=25 |
+| 网格以 `package://dog1/meshes/...`（旧版）或 `package://dog921/meshes/...`（新版）引用（无 ROS 无法解析） | 重写为绝对路径 |
+| 旧版 dog1 导出：`Link_*_hip.STL` 为空文件（仅 80 字节头、0 个三角形），导入器会丢弃/崩溃 | 自动生成占位圆柱网格（半径 0.035 m、长 0.08 m、沿髋关节轴）；dog921 的 `link_*_hip.STL` 为真实网格（每个约 17 MB），直接复制 |
+| 旧版 dog1 导出：所有关节 `limit lower/upper/effort/velocity` 均为 0 或过窄，机器人无法运动 | 替换为合理范围（hip ±0.8，thigh -2.0~2.5 / 镜像，calf -2.5~0.5 / 镜像），effort=100，velocity=25；dog921 保留导出真实限位（hip ±0.873，thigh -3.49~1.57，calf -1.885~0） |
 | 在 `InteractiveScene` 创建过程中做 URDF 转换会使导入器死锁（Isaac Sim 5.1） | 先单独把 URDF 转成 USD（`ensure_geesun_dog_usd()`，按 mtime 缓存），场景再从 USD 生成 |
 
-**用法：**
-
-```bash
-conda activate env_isaaclab_sim51
-python scripts/geesun_dog/move_geesun_dog.py                    # 图形界面，2000 步
-python scripts/geesun_dog/move_geesun_dog.py --num_steps 0      # 一直运行，直到关闭窗口
-python scripts/geesun_dog/move_geesun_dog.py --headless --num_steps 300     # 无界面快速检查
-python scripts/geesun_dog/move_geesun_dog.py --gait_freq 2.0 --amp_deg 35   # 更快/摆幅更大
-```
+> **注意（9/22 更新）：** 后小腿站立姿态由 `+1.4` 调整为 `-1.4`（`unitree.py` 的 `GEESUN_DOG_CFG` 与脚本 `base` 字典）——dog921 真实 calf 限位为 `[-1.885, 0]`，旧 `+1.4` 姿态会超出上限被 PhysX 限位钳住。
+>
+> **注意（9/23 站立姿态验证更新）：** 对 dog921 足板网格做正运动学测量后，站立姿态做了两处修正（见下文"站立姿态验证"）：
+>
+> 1. **后大腿 `joint_hl/hr_thigh` 由 `-1.0` 改为 `+1.0`**（与前腿同号的镜像站姿）。实测 `+1.0` 时四条足板最低点同高（基座原点下方 0.166 m）；旧 `-1.0` 姿态后足抬高约 2.5 cm 且后足板呈竖直"鳍"状，狗会以前爪"坐"着并后仰。
+> 2. **生成高度 `init_state.pos.z` 由 `0.2` 改为 `0.17`**。实测站立高度（足板底面到基座原点）为 **0.166 m**，而不是运动学链长度暗示的 ~0.37 m——dog921 的足板是倾斜的平板，只有下前缘接触地面。旧 0.2 m 会让足板陷入地面 3.4 cm，产生去穿透冲量。
 
 **参数：**
 
@@ -330,6 +327,27 @@ python scripts/geesun_dog/move_geesun_dog.py --gait_freq 2.0 --amp_deg 35   # �
 | `--amp_deg` | 25 | 关节摆动幅度（度），髋关节减半 |
 | `--headless` | 关 | 无图形界面运行 |
 | `--device` | `cuda:0` | 也可用 `cpu`，但建议使用 GPU |
+| `--root_z` | 1.0 | 初始根高度（m）；`0.17` 让足着地（实测站立高度 0.166 m），默认 1.0 用于空中步态演示 |
+| `--no_pin_root` | 关 | 不每步重写根状态（让重力/接触动力学生效）；配合 `--root_z 0.17` 做站立测试 |
+| `--rear_thigh` | 1.0 | 站立姿态的后大腿基准角（rad）；`1.0` = 与 `GEESUN_DOG_CFG` 一致的镜像站姿，`-1.0` = 旧"坐"姿态（消融对照） |
+| `--calf_base` | -1.4 | 站立姿态的全部 calf 基准角（rad） |
+| `--settle_steps` | 100 | `--no_pin_root` 模式下先在 `--root_z` 钉住根多少步（让 PD 收敛到站姿）再释放 |
+| `--no_self_collision` | 关 | 关闭自碰撞（退化网格细条可能卡腿，消融用） |
+| `--stiffness` / `--damping` | 0（=CFG 值） | 运行时覆盖 PD 增益（CFG 默认 k=30, b=1） |
+| `--print_contact` | 关 | 每 100 步打印各关节施加力矩（N·m） |
+
+**用法：**
+
+```bash
+conda activate env_isaaclab_sim51
+python scripts/geesun_dog/move_geesun_dog.py                    # 图形界面，2000 步
+python scripts/geesun_dog/move_geesun_dog.py --num_steps 0      # 一直运行，直到关闭窗口
+python scripts/geesun_dog/move_geesun_dog.py --headless --num_steps 300     # 无界面快速检查
+python scripts/geesun_dog/move_geesun_dog.py --gait_freq 2.0 --amp_deg 35   # 更快/摆幅更大
+# 站立测试（自由根 + 实测高度 + 镜像后肢姿态）：
+python scripts/geesun_dog/move_geesun_dog.py --headless --num_steps 600 \
+    --root_z 0.17 --no_pin_root --amp_deg 0 --settle_steps 100 --rear_thigh 1.0
+```
 
 **验证要点：**
 
@@ -338,6 +356,21 @@ python scripts/geesun_dog/move_geesun_dog.py --gait_freq 2.0 --amp_deg 35   # �
 3. 控制台每 100 步打印 `[step N] joint_pos (rad):`，且 12 个关节值**持续振荡**（相邻打印之间没有数值冻结不变）。
 4. 图形界面中机器人悬浮在离地约 1 m 处（基座被固定以便四条腿自由摆动），四条腿原地小跑。
 5. 首次启动需要几分钟：URDF→USD 转换（约 1 分钟）+ 着色器编译（约 3~5 分钟）。如需强制重新转换：`rm -rf /tmp/IsaacLab/geesun_dog`。
+
+**站立姿态验证（9/23，自由根测试结论）：**
+
+对 `--no_pin_root --root_z 0.17`（自由根、实测站立高度）做站立测试，结论如下：
+
+| 测试 | 后大腿 | 释放方式 | 结果 |
+|---|---|---|---|
+| B3 | -1.0（旧姿态） | 钉住 2 s 后释放 | 后足竖直鳍状、抬高 2.5 cm，狗"坐"在前爪上，缓慢后仰趴伏（root z → 0.071） |
+| C6/C10 | +1.0（镜像站姿） | 钉住 2 s 后释放 / 直接释放 | 前倾趴伏，root z → 0.030（基座底面恰好触地），calf 卡在下限 -1.885 |
+| C5 | +1.0 | 关闭自碰撞 | 与 C6 逐点相同（自碰撞不是主因） |
+| C7 | +1.0 | k=200, b=10 | 无法静立，向后"爬行"漂移（足缘接触 + 硬 PD 形成能量泵） |
+| C8 | +1.0, calf -1.7 | 足板放平（calf 总角 -0.7） | 与 C6 相同（仍塌缩到同一姿态） |
+| C9 | +1.0 | `--print_contact` | 钉住期间 12 关节施加力矩 ≈ 0 N·m —— 腿未被加载，身体由 pin 托着 |
+
+**结论：** 资产链与 12-DOF 控制正常（空中 trot 演示通过）；但默认 PD（k=30, b=1）下**尚不能长时间静立**。塌缩机制：dog921 足板是倾斜平板，接触面只有下前缘（前足缘在膝前方 0.28 m，形成踮脚力臂），软 PD 在落地瞬态后缓慢屈曲（2 s 内 calf 到达下限 -1.885），后大腿网格下端在后足后方戳地，身体前倾直至基座底面（z=-0.030）触地。后续改进方向（按优先级）：① 为足部增加平底 collider（如 0.1×0.08 m 盒体）替代倾斜足板的边缘接触；② 调高 PD 增益并配合临界阻尼；③ 直接上 RL 策略训练（`Unitree-GeesunDog-Velocity`），不依赖纯 PD 静立。
 
 **任务训练（可选）：**
 

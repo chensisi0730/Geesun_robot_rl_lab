@@ -725,7 +725,14 @@ _GEESUN_REPO_ROOT = (
     os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))))
 )
-GEESUN_DOG_DIR = os.path.join(_GEESUN_REPO_ROOT, "unitree_model", "geesun_dog")
+# The updated dog asset (9/21 "dog921" export with real meshes and joint limits) lives in
+# <repo>/geesun_dog_urdf; the legacy <repo>/unitree_model/geesun_dog location is kept as a
+# fallback so ablation runs against the old dog1 URDF keep working.
+_GEESEN_DOG_CANDIDATES = [
+    os.path.join(_GEESUN_REPO_ROOT, "geesun_dog_urdf"),
+    os.path.join(_GEESUN_REPO_ROOT, "unitree_model", "geesun_dog"),
+]
+GEESUN_DOG_DIR = next((d for d in _GEESEN_DOG_CANDIDATES if os.path.isdir(d)), _GEESEN_DOG_CANDIDATES[0])
 
 
 def _write_placeholder_cylinder_stl(path: str, radius: float, length: float, segments: int = 24) -> None:
@@ -796,19 +803,28 @@ def _prepare_geesun_dog_urdf() -> None:
 
     tmp_pkg_dir = "/tmp/IsaacLab/geesun_dog"
     tmp_mesh_dir = f"{tmp_pkg_dir}/meshes"
-    src_urdf = f"{GEESUN_DOG_DIR}/geesun-dog/dog1/urdf/dog1.urdf"
+    dog_pkg_dir = f"{GEESUN_DOG_DIR}/geesun-dog/dog1"
+    # Prefer the updated dog921 export (real meshes and joint limits); fall back to the
+    # legacy dog1 URDF so ablation runs against the old asset keep working.
+    src_urdf = f"{dog_pkg_dir}/urdf/dog921.urdf"
+    if not os.path.isfile(src_urdf):
+        src_urdf = f"{dog_pkg_dir}/urdf/dog1.urdf"
     dst_urdf = f"{tmp_pkg_dir}/dog1.urdf"
     if not os.path.isfile(src_urdf):
         return
     os.makedirs(tmp_mesh_dir, exist_ok=True)
+    has_real_limits = os.path.basename(src_urdf) == "dog921.urdf"
 
-    # Generate placeholder STL for the four empty hip meshes; copy all other meshes.
-    empty_hip_meshes = ["Link_fr_hip.STL", "Link_fl_hip.STL", "Link_hl_hip.STL", "Link_hr_hip.STL"]
+    # Handle both the legacy (Link_*) and updated (link_*) hip mesh name variants: the
+    # legacy export ships empty meshes (80-byte header, zero triangles) which are replaced
+    # by generated placeholder cylinders; the dog921 meshes are real and get copied.
+    empty_hip_meshes = [f"{prefix}_{side}_hip.STL" for side in ("fr", "fl", "hl", "hr") for prefix in ("Link", "link")]
     for name in empty_hip_meshes:
-        src_mesh = f"{GEESUN_DOG_DIR}/geesun-dog/dog1/meshes/{name}"
+        src_mesh = f"{dog_pkg_dir}/meshes/{name}"
         dst_mesh = f"{tmp_mesh_dir}/{name}"
-        is_empty = (not os.path.exists(src_mesh)) or os.path.getsize(src_mesh) <= 84
-        if is_empty:
+        if not os.path.exists(src_mesh):
+            continue
+        if os.path.getsize(src_mesh) <= 84:
             _write_placeholder_cylinder_stl(dst_mesh, radius=0.035, length=0.08)
         else:
             shutil.copyfile(src_mesh, dst_mesh)
@@ -816,72 +832,73 @@ def _prepare_geesun_dog_urdf() -> None:
     with open(src_urdf, "r") as f:
         content = f.read()
 
-    # Replace package://dog1/meshes/FILE with an absolute path to the real meshes dir,
+    # Replace package://dog{1,921}/meshes/FILE with an absolute path to the real meshes dir,
     # except for the empty hip meshes which point to the generated placeholders.
-    meshes_abs = os.path.abspath(f"{GEESUN_DOG_DIR}/geesun-dog/dog1/meshes")
-    content = re.sub(r"package://dog1/meshes/", f"{meshes_abs}/", content)
+    meshes_abs = os.path.abspath(f"{dog_pkg_dir}/meshes")
+    content = re.sub(r"package://(?:dog1|dog921)/meshes/", f"{meshes_abs}/", content)
     for name in empty_hip_meshes:
         content = content.replace(f"{meshes_abs}/{name}", f"{tmp_mesh_dir}/{name}")
 
-    # The URDF has all joint limits set to [0, 0] (SolidWorks export default).
-    # Replace with reasonable ranges so the robot can actually move.
-    # Front legs: thigh forward (+), calf backward (-); Rear legs: thigh backward (-), calf forward (+)
-    content = re.sub(
-        r'(<joint\s+name="joint_fr_thigh".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
-        lambda m: f'{m.group(1)}"-2.0"{m.group(2)}"2.5"',
-        content,
-        flags=re.DOTALL,
-    )
-    content = re.sub(
-        r'(<joint\s+name="joint_fl_thigh".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
-        lambda m: f'{m.group(1)}"-2.0"{m.group(2)}"2.5"',
-        content,
-        flags=re.DOTALL,
-    )
-    content = re.sub(
-        r'(<joint\s+name="joint_hl_thigh".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
-        lambda m: f'{m.group(1)}"-2.5"{m.group(2)}"2.0"',
-        content,
-        flags=re.DOTALL,
-    )
-    content = re.sub(
-        r'(<joint\s+name="joint_hr_thigh".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
-        lambda m: f'{m.group(1)}"-2.5"{m.group(2)}"2.0"',
-        content,
-        flags=re.DOTALL,
-    )
-    content = re.sub(
-        r'(<joint\s+name="joint_fr_calf".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
-        lambda m: f'{m.group(1)}"-2.5"{m.group(2)}"0.5"',
-        content,
-        flags=re.DOTALL,
-    )
-    content = re.sub(
-        r'(<joint\s+name="joint_fl_calf".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
-        lambda m: f'{m.group(1)}"-2.5"{m.group(2)}"0.5"',
-        content,
-        flags=re.DOTALL,
-    )
-    content = re.sub(
-        r'(<joint\s+name="joint_hl_calf".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
-        lambda m: f'{m.group(1)}"-0.5"{m.group(2)}"2.5"',
-        content,
-        flags=re.DOTALL,
-    )
-    content = re.sub(
-        r'(<joint\s+name="joint_hr_calf".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
-        lambda m: f'{m.group(1)}"-0.5"{m.group(2)}"2.5"',
-        content,
-        flags=re.DOTALL,
-    )
-    # Hip joints (all 4): symmetric range
-    for hip in ["joint_fr_hip", "joint_fl_hip", "joint_hr_hip", "joint_hl_hip"]:
+    # The legacy dog1 export has zeroed / too-tight joint limits (SolidWorks export default),
+    # so they are replaced with reasonable ranges that let the robot actually move.
+    # The updated dog921 export carries real joint limits, which we keep as-is.
+    if not has_real_limits:
         content = re.sub(
-            rf'(<joint\s+name="{hip}".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
-            lambda m: f'{m.group(1)}"-0.8"{m.group(2)}"0.8"',
+            r'(<joint\s+name="joint_fr_thigh".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+            lambda m: f'{m.group(1)}"-2.0"{m.group(2)}"2.5"',
             content,
             flags=re.DOTALL,
         )
+        content = re.sub(
+            r'(<joint\s+name="joint_fl_thigh".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+            lambda m: f'{m.group(1)}"-2.0"{m.group(2)}"2.5"',
+            content,
+            flags=re.DOTALL,
+        )
+        content = re.sub(
+            r'(<joint\s+name="joint_hl_thigh".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+            lambda m: f'{m.group(1)}"-2.5"{m.group(2)}"2.0"',
+            content,
+            flags=re.DOTALL,
+        )
+        content = re.sub(
+            r'(<joint\s+name="joint_hr_thigh".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+            lambda m: f'{m.group(1)}"-2.5"{m.group(2)}"2.0"',
+            content,
+            flags=re.DOTALL,
+        )
+        content = re.sub(
+            r'(<joint\s+name="joint_fr_calf".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+            lambda m: f'{m.group(1)}"-2.5"{m.group(2)}"0.5"',
+            content,
+            flags=re.DOTALL,
+        )
+        content = re.sub(
+            r'(<joint\s+name="joint_fl_calf".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+            lambda m: f'{m.group(1)}"-2.5"{m.group(2)}"0.5"',
+            content,
+            flags=re.DOTALL,
+        )
+        content = re.sub(
+            r'(<joint\s+name="joint_hl_calf".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+            lambda m: f'{m.group(1)}"-0.5"{m.group(2)}"2.5"',
+            content,
+            flags=re.DOTALL,
+        )
+        content = re.sub(
+            r'(<joint\s+name="joint_hr_calf".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+            lambda m: f'{m.group(1)}"-0.5"{m.group(2)}"2.5"',
+            content,
+            flags=re.DOTALL,
+        )
+        # Hip joints (all 4): symmetric range
+        for hip in ["joint_fr_hip", "joint_fl_hip", "joint_hr_hip", "joint_hl_hip"]:
+            content = re.sub(
+                rf'(<joint\s+name="{hip}".*?lower=)"[^"]*"(\s+upper=)"[^"]*"',
+                lambda m: f'{m.group(1)}"-0.8"{m.group(2)}"0.8"',
+                content,
+                flags=re.DOTALL,
+            )
 
     # Also set non-zero effort/velocity limits so the URDF is well-formed
     content = re.sub(r'effort="0"\s+velocity="0"', 'effort="100" velocity="25"', content)
@@ -957,18 +974,26 @@ GEESUN_DOG_CFG = UnitreeArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.2),
+        # Measured standing height: in the standing pose the foot-plate bottom is 0.166 m
+        # below the base origin (see README, Geesun 站立姿态验证); 0.17 leaves ~4 mm clearance.
+        pos=(0.0, 0.0, 0.17),
         joint_pos={
             # front legs (fr/fl): thigh forward (+), calf backward (-)
             "joint_fr_thigh": 1.0,
             "joint_fl_thigh": 1.0,
             "joint_fr_calf": -1.4,
             "joint_fl_calf": -1.4,
-            # rear legs (hl/hr): thigh backward (-), calf forward (+)
-            "joint_hl_thigh": -1.0,
-            "joint_hr_thigh": -1.0,
-            "joint_hl_calf": 1.4,
-            "joint_hr_calf": 1.4,
+            # rear legs (hl/hr): thigh +1.0 (same sign as the front legs). Measured against
+            # the dog921 foot-plate mesh, +1.0 puts all four feet at the same height
+            # (0.166 m below the base) - the natural standing stance. The legacy -1.0
+            # stance lifts the rear feet ~2.5 cm and leaves the rear foot plate vertical
+            # (the dog "sits" on its front paws and tips backwards).
+            # Calf -1.4 stays inside the real dog921 limit range [-1.885, 0]
+            # (the legacy +1.4 pose exceeded upper=0).
+            "joint_hl_thigh": 1.0,
+            "joint_hr_thigh": 1.0,
+            "joint_hl_calf": -1.4,
+            "joint_hr_calf": -1.4,
         },
         joint_vel={"joint_.*": 0.0},
     ),

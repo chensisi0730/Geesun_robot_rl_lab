@@ -1,7 +1,8 @@
 """This script imports the Geesun dog (dog1) URDF into Isaac Sim and animates all 12 joints.
 
-The robot is spawned from ``unitree_model/geesun_dog/geesun-dog/dog1/urdf/dog1.urdf``
-with a standing pose, then each joint follows its own sinusoid so the dog walks in place
+The robot is spawned from ``geesun_dog_urdf/geesun-dog/dog1`` (updated ``dog921.urdf`` with
+real meshes and joint limits; legacy ``dog1.urdf`` as fallback) with a standing pose, then
+each joint follows its own sinusoid so the dog walks in place
 in a trot-like gait (diagonal legs in phase).
 
 .. code-block:: bash
@@ -26,6 +27,16 @@ parser.add_argument(
     "--gait_freq", type=float, default=1.5, help="Gait frequency in Hz for the sinusoidal joint motion"
 )
 parser.add_argument("--amp_deg", type=float, default=25.0, help="Joint oscillation amplitude in degrees")
+parser.add_argument("--root_z", type=float, default=1.0, help="Initial root height (m); 0.17 puts the feet on the ground (measured stance height 0.166 m); the default 1.0 is for the pinned air-trot demo")
+parser.add_argument("--no_pin_root", action="store_true", help="Do not re-write the root state every step (let gravity/dynamics act)")
+parser.add_argument("--rear_thigh", type=float, default=1.0, help="Standing-pose base angle for rear thigh joints (rad); 1.0 = mirrored stance matching GEESUN_DOG_CFG, -1.0 = legacy sitting stance (ablation)")
+parser.add_argument("--calf_base", type=float, default=-1.4, help="Standing-pose base angle for all calf joints (rad); more negative flattens the foot plate under the knee")
+parser.add_argument("--settle_steps", type=int, default=100, help="In --no_pin_root mode: hold the root at --root_z for this many steps (lets the PD settle into the stance) before releasing it")
+parser.add_argument("--no_self_collision", action="store_true", help="Disable articulation self-collisions (the degenerate dog921 meshes can pinch the legs)")
+parser.add_argument("--stiffness", type=float, default=0.0, help="Override the actuator PD stiffness (0 = keep the cfg value)")
+parser.add_argument("--damping", type=float, default=0.0, help="Override the actuator PD damping (0 = keep the cfg value)")
+parser.add_argument("--print_contact", action="store_true", help="Print per-body net contact force z every 100 steps")
+
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -88,12 +99,44 @@ def main():
     sim = SimulationContext(sim_cfg)
 
     scene_cfg = GeesunDogSceneCfg(num_envs=1, env_spacing=5.0)
+    if args_cli.no_self_collision:
+        # dog921 meshes are degenerate (each link is a single repeated vertex); the thin
+        # self-colliding slivers pinch the legs, so disable self-collisions for this ablation.
+        scene_cfg.robot = ROBOT_CFG.replace(
+            prim_path="{ENV_REGEX_NS}/Robot",
+            spawn=ROBOT_CFG.spawn.replace(
+                articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                    enabled_self_collisions=False,
+                    solver_position_iteration_count=8,
+                    solver_velocity_iteration_count=4,
+                )
+            ),
+        )
+        print("Self-collisions: disabled", flush=True)
     scene = InteractiveScene(scene_cfg)
     robot: Articulation = scene["robot"]
     sim.reset()
 
     # print joint names for sanity check (requires reset first to populate PhysX views)
     print("Loaded robot joints:", robot.joint_names, flush=True)
+
+    if args_cli.stiffness > 0 or args_cli.damping > 0:
+        act = robot.actuators["GeEsunDog"]
+        if args_cli.stiffness > 0:
+            act.stiffness = (
+                torch.full_like(act.stiffness, args_cli.stiffness)
+                if torch.is_tensor(act.stiffness)
+                else args_cli.stiffness
+            )
+        if args_cli.damping > 0:
+            act.damping = (
+                torch.full_like(act.damping, args_cli.damping) if torch.is_tensor(act.damping) else args_cli.damping
+            )
+        print(
+            f"PD override: k={args_cli.stiffness if args_cli.stiffness > 0 else 'cfg'}, "
+            f"b={args_cli.damping if args_cli.damping > 0 else 'cfg'}",
+            flush=True,
+        )
 
     # --- define per-joint sinusoid parameters (standing base + amplitude, phase in rad) ---
     amp = math.radians(args_cli.amp_deg)
@@ -109,12 +152,12 @@ def main():
         "joint_hl_hip": 0.0,
         "joint_fr_thigh": 1.0,
         "joint_fl_thigh": 1.0,
-        "joint_hr_thigh": -1.0,
-        "joint_hl_thigh": -1.0,
-        "joint_fr_calf": -1.4,
-        "joint_fl_calf": -1.4,
-        "joint_hr_calf": 1.4,
-        "joint_hl_calf": 1.4,
+        "joint_hr_thigh": args_cli.rear_thigh,
+        "joint_hl_thigh": args_cli.rear_thigh,
+        "joint_fr_calf": args_cli.calf_base,
+        "joint_fl_calf": args_cli.calf_base,
+        "joint_hr_calf": args_cli.calf_base,
+        "joint_hl_calf": args_cli.calf_base,
     }
     # hip swing amplitude (smaller than thigh/calf)
     amp_map = {name: amp * 0.5 if name.endswith("_hip") else amp for name in base}
@@ -146,7 +189,13 @@ def main():
     default_root = robot.data.default_root_state.clone()
     # raise the base well above the ground (leg reach is ~0.7 m) so the swinging legs
     # do not hit the ground and jam the joints
-    default_root[0, 2] = 1.0
+    default_root[0, 2] = args_cli.root_z
+
+    # Write the exact target stance as the initial joint state, so the PD does not swing
+    # the joints across large angles (e.g. an ablation --rear_thigh) through the ground.
+    # Also place the root at --root_z so the height is exact even in --no_pin_root mode.
+    robot.write_root_state_to_sim(default_root)
+    robot.write_joint_state_to_sim(base_vec.unsqueeze(0), torch.zeros(1, num_joints, device=sim.device))
 
     sim_dt = dt
     total_steps = args_cli.num_steps
@@ -155,7 +204,8 @@ def main():
     while simulation_app.is_running():
         t = step_idx * sim_dt
         actions[0] = base_vec + amp_vec * torch.sin(w * t + phase_vec)
-        robot.write_root_state_to_sim(default_root)
+        if not args_cli.no_pin_root or step_idx < args_cli.settle_steps:
+            robot.write_root_state_to_sim(default_root)
         robot.set_joint_position_target(actions)
         scene.write_data_to_sim()
         sim.step()
@@ -167,7 +217,11 @@ def main():
 
         if step_idx % 100 == 0:
             pos = robot.data.joint_pos[0].cpu().tolist()
-            print(f"[step {step_idx}] joint_pos (rad):", ["%.3f" % p for p in pos], flush=True)
+            root = robot.data.root_state_w[0, :3].cpu().tolist()
+            print(f"[step {step_idx}] root=({root[0]:.3f},{root[1]:.3f},{root[2]:.3f}) joint_pos (rad):", ["%.3f" % p for p in pos], flush=True)
+            if args_cli.print_contact:
+                tq = robot.data.applied_torque[0].cpu().tolist()
+                print(f"[step {step_idx}] applied_torque (N*m):", ["%.2f" % t for t in tq], flush=True)
 
         step_idx += 1
         if total_steps > 0 and step_idx >= total_steps:

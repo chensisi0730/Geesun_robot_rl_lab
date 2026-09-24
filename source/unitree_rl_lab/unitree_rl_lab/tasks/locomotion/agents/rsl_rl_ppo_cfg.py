@@ -64,10 +64,10 @@ class UnitreeGo2PPORunnerCfg(BasePPORunnerCfg):
         entropy_coef=0.02,
         num_learning_epochs=4,
         num_mini_batches=8,
-        learning_rate=8.0e-4,
+        learning_rate=2.0e-04,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
-        desired_kl=0.01,
+        desired_kl=0.025,
         max_grad_norm=0.8,
     )

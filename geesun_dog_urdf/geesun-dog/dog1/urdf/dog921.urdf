@@ -1,0 +1,743 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="dog921">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="0.049835336233372 0.00617919360330467 0.0766141829747735"
+        rpy="0 0 0" />
+      <mass
+        value="10.81391158" />
+      <inertia
+        ixx="0.11187806"
+        ixy="0.00149276"
+        ixz="-0.01268662"
+        iyy="0.50911058"
+        iyz="-0.00077530"
+        izz="0.52728555" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="link_fl_hip">
+    <inertial>
+      <origin
+        xyz="0.0491576285865299 0.0257695499545022 7.51886112535674E-05"
+        rpy="0 0 0" />
+      <mass
+        value="5.10929270" />
+      <inertia
+        ixx="0.01371746"
+        ixy="-0.00444550"
+        ixz="-0.00007604"
+        iyy="0.02170630"
+        iyz="-0.00001029"
+        izz="0.02476852" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_fl_hip.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.533333333333333 0.850980392156863 0.823529411764706 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_fl_hip.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_fl_hip"
+    type="revolute">
+    <origin
+      xyz="0.236 0.0825 0.08"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="link_fl_hip" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-0.8726646259971648"
+      upper="0.8726646259971648"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="link_fl_thigh">
+    <inertial>
+      <origin
+        xyz="-0.015635867170693 0.028395867474674 -0.1133714133397"
+        rpy="0 0 0" />
+      <mass
+        value="1.88706887" />
+      <inertia
+        ixx="0.01855419"
+        ixy="0.00001560"
+        ixz="-0.00174320"
+        iyy="0.01982141"
+        iyz="0.00013217"
+        izz="0.00227361" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_fl_thigh.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.533333333333333 0.850980392156863 0.823529411764706 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_fl_thigh.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_fl_thigh"
+    type="revolute">
+    <origin
+      xyz="0.082498 0.10275 0"
+      rpy="0 0 0" />
+    <parent
+      link="link_fl_hip" />
+    <child
+      link="link_fl_thigh" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-3.49"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="link_fl_calf">
+    <inertial>
+      <origin
+        xyz="0.14012 0.0014776 -0.076919"
+        rpy="0 0 0" />
+      <mass
+        value="0.65329189" />
+      <inertia
+        ixx="0.00255867"
+        ixy="-0.00007544"
+        ixz="0.00382924"
+        iyy="0.00888695"
+        iyz="0.00004596"
+        izz="0.00643751" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_fl_calf.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.53333 0.85098 0.82353 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_fl_calf.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_fl_calf"
+    type="revolute">
+    <origin
+      xyz="0 0.03111 -0.31"
+      rpy="0 0 0" />
+    <parent
+      link="link_fl_thigh" />
+    <child
+      link="link_fl_calf" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-1.8849555921538759"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="link_fr_hip">
+    <inertial>
+      <origin
+        xyz="0.051162798787143 -0.0257958055147344 -3.04811340779334E-05"
+        rpy="0 0 0" />
+      <mass
+        value="5.10929270" />
+      <inertia
+        ixx="0.01370664"
+        ixy="0.00443411"
+        ixz="-0.00011875"
+        iyy="0.02170083"
+        iyz="0.00000921"
+        izz="0.02477455" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_fr_hip.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.533333333333333 0.850980392156863 0.823529411764706 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_fr_hip.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_fr_hip"
+    type="revolute">
+    <origin
+      xyz="0.233999999999984 -0.0825000000000045 0.0799999999999989"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="link_fr_hip" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-0.8726646259971648"
+      upper="0.8726646259971648"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="link_fr_thigh">
+    <inertial>
+      <origin
+        xyz="-0.0156358027599017 -0.0283958576773886 -0.113371628845058"
+        rpy="0 0 0" />
+      <mass
+        value="1.88818124" />
+      <inertia
+        ixx="0.01855611"
+        ixy="-0.00001557"
+        ixz="-0.00174419"
+        iyy="0.01982380"
+        iyz="-0.00013214"
+        izz="0.00227424" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_fr_thigh.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.533333333333333 0.850980392156863 0.823529411764706 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_fr_thigh.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_fr_thigh"
+    type="revolute">
+    <origin
+      xyz="0.084498 -0.10275 0"
+      rpy="0 0 0" />
+    <parent
+      link="link_fr_hip" />
+    <child
+      link="link_fr_thigh" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-3.49"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="link_fr_calf">
+    <inertial>
+      <origin
+        xyz="0.140120746214293 0.00288720699374365 -0.0769190947964953"
+        rpy="0 0 0" />
+      <mass
+        value="0.65454083" />
+      <inertia
+        ixx="0.00256584"
+        ixy="-0.00008091"
+        ixz="0.00384077"
+        iyy="0.00891435"
+        iyz="0.00004892"
+        izz="0.00645941" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_fr_calf.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.533333333333333 0.850980392156863 0.823529411764706 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_fr_calf.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_fr_calf"
+    type="revolute">
+    <origin
+      xyz="0 -0.0313 -0.31"
+      rpy="0 0 0" />
+    <parent
+      link="link_fr_thigh" />
+    <child
+      link="link_fr_calf" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-1.8849555921538759"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="link_hl_hip">
+    <inertial>
+      <origin
+        xyz="-0.0510530639353285 0.02576955194393 -5.32599100056052E-05"
+        rpy="0 0 0" />
+      <mass
+        value="5.10929270" />
+      <inertia
+        ixx="0.01367862"
+        ixy="0.00442300"
+        ixz="0.00007234"
+        iyy="0.02167065"
+        iyz="0.00000631"
+        izz="0.02477172" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_hl_hip.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.647058823529412 0.619607843137255 0.588235294117647 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_hl_hip.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_hl_hip"
+    type="revolute">
+    <origin
+      xyz="-0.234 0.0825 0.08"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="link_hl_hip" />
+    <axis
+      xyz="-1 0 0" />
+    <limit
+      lower="-0.8726646259971648"
+      upper="0.8726646259971648"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="link_hl_thigh">
+    <inertial>
+      <origin
+        xyz="-0.0156358671702969 0.028395867473902 -0.11337141333872"
+        rpy="0 0 0" />
+      <mass
+        value="1.88706887" />
+      <inertia
+        ixx="0.01855411"
+        ixy="0.00001557"
+        ixz="-0.00174330"
+        iyy="0.01982136"
+        iyz="0.00013218"
+        izz="0.00227364" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_hl_thigh.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.533333333333333 0.850980392156863 0.823529411764706 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_hl_thigh.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_hl_thigh"
+    type="revolute">
+    <origin
+      xyz="-0.084498 0.10275 0"
+      rpy="0 0 0" />
+    <parent
+      link="link_hl_hip" />
+    <child
+      link="link_hl_thigh" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-3.49"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="link_hl_calf">
+    <inertial>
+      <origin
+        xyz="0.140120750580854 0.00128720736938651 -0.076919099592674"
+        rpy="0 0 0" />
+      <mass
+        value="0.65329189" />
+      <inertia
+        ixx="0.00255867"
+        ixy="-0.00007544"
+        ixz="0.00382924"
+        iyy="0.00888695"
+        iyz="0.00004596"
+        izz="0.00643750" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_hl_calf.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.533333333333333 0.850980392156863 0.823529411764706 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_hl_calf.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_hl_calf"
+    type="revolute">
+    <origin
+      xyz="0 0.0313 -0.31"
+      rpy="0 0 0" />
+    <parent
+      link="link_hl_thigh" />
+    <child
+      link="link_hl_calf" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-1.8849555921538759"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="link_hr_hip">
+    <inertial>
+      <origin
+        xyz="-0.049057607803679 -0.0257958055147088 8.13652600679694E-05"
+        rpy="0 0 0" />
+      <mass
+        value="5.10929270" />
+      <inertia
+        ixx="0.01370661"
+        ixy="-0.00441198"
+        ixz="-0.00011004"
+        iyy="0.02166493"
+        iyz="0.00000237"
+        izz="0.02473868" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_hr_hip.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.647058823529412 0.619607843137255 0.588235294117647 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_hr_hip.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_hr_hip"
+    type="revolute">
+    <origin
+      xyz="-0.236 -0.0825 0.08"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="link_hr_hip" />
+    <axis
+      xyz="-1 0 0" />
+    <limit
+      lower="-0.8726646259971648"
+      upper="0.8726646259971648"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="link_hr_thigh">
+    <inertial>
+      <origin
+        xyz="-0.0156358027604003 -0.0283958576808539 -0.113371628845624"
+        rpy="0 0 0" />
+      <mass
+        value="1.88818124" />
+      <inertia
+        ixx="0.01855626"
+        ixy="-0.00001553"
+        ixz="-0.00174437"
+        iyy="0.01982400"
+        iyz="-0.00013212"
+        izz="0.00227428" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_hr_thigh.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.533333333333333 0.850980392156863 0.823529411764706 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_hr_thigh.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_hr_thigh"
+    type="revolute">
+    <origin
+      xyz="-0.082498 -0.10275 0"
+      rpy="0 0 0" />
+    <parent
+      link="link_hr_hip" />
+    <child
+      link="link_hr_thigh" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-3.49"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="link_hr_calf">
+    <inertial>
+      <origin
+        xyz="0.140120746261578 0.00288720699735415 -0.0769190948551366"
+        rpy="0 0 0" />
+      <mass
+        value="0.65454083" />
+      <inertia
+        ixx="0.00256584"
+        ixy="-0.00008091"
+        ixz="0.00384077"
+        iyy="0.00891435"
+        iyz="0.00004892"
+        izz="0.00645941" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_hr_calf.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.533333333333333 0.850980392156863 0.823529411764706 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://dog921/meshes/link_hr_calf.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_hr_calf"
+    type="revolute">
+    <origin
+      xyz="0 -0.0313 -0.31"
+      rpy="0 0 0" />
+    <parent
+      link="link_hr_thigh" />
+    <child
+      link="link_hr_calf" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-1.8849555921538759"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+</robot>
