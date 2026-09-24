@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """TensorBoard curve helpers shared by the monitor and the auto-tuner.
 
-Pure-python (no numpy) so it stays cheap to import from the 4-hourly monitor.
+Pure-python (no numpy) so it stays cheap to import from the 6-hourly monitor.
 """
 
 from __future__ import annotations

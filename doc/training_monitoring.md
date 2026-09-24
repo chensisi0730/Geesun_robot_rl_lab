@@ -1,8 +1,8 @@
 # 训练监控与结果验证手册（GO2 / G1 速度任务）
 
-## 1. 4 小时自动监控
+## 1. 6 小时自动监控
 
-`scripts/monitor_tb_check.py` 每 4 小时检查一次最新训练 run（`logs/rsl_rl/unitree_go2_velocity/` 下最新目录）：
+`scripts/monitor_tb_check.py` 每 6 小时检查一次最新训练 run（`logs/rsl_rl/unitree_go2_velocity/` 下最新目录）：
 
 1. **进程存活**：训练进程死亡时自动从最新 checkpoint resume（10 分钟冷却防崩溃循环；无 checkpoint 时只告警不自动重启，日志 `/tmp/train_go2_auto.log`）；
    若存在 overflow 停止标记（见 2.）则**抑制自动 resume**，需人工重启；
@@ -14,15 +14,22 @@
    防御性保护：只杀匹配到的进程组，pgid≤1 与监控自身进程组永不触碰；
 3. **TensorBoard 快照**：课程、速度误差、reward、终止率、value loss、学习率、噪声和 FPS 最近 200 迭代；
 4. **异常标志**：进程死亡、overflow、time_out <0.85、bad_orientation >2%、LR 长期在下限、地形提升时 reward 下跌或误差上升，以及**价值函数发散保护**：最近 200 迭代 `Loss/value_function` 中位数 > 100 时判定为发散，交给 autotune 将 PPO 学习率减半（下限 `2e-4`），随后 fresh 重训，避免续训已经发散的 checkpoint。
+5. **瞬态恶化容忍**（`terrain_levels`、`Loss/value_function` 等短时下降但会自行恢复的情形）：
+   - **单次不动作**：value loss 尖峰、terrain_levels 下降单次检查只报 `WARN ... tolerated`，须在下一次检查（6 小时后）**复现**才升级为 CRITICAL/动作；自行恢复的恶化永远不会中断训练；
+   - **同 run 确认**：价值函数"持续发散"的确认要求两次检查属于同一个 run，fresh 重训后需重新观察；
+   - **跨 run 不对比**：run 切换后的 reward/terrain 对比直接跳过（fresh 重启会把课程归零、reward 基线改变），报告中以 `note: cross-check comparison skipped` 注明，避免误报"terrain +5.9, err_xy 恶化"这类假象；
+   - **autotune 恶化类动作二次确认**：曲线恶化/摔倒率上升触发的"停训+调参+重启"动作需连续 2 次检查复现（`CONFIRM_CHECKS = 2`，状态记在 `outputs/autotune/state.json` 的 `pending_confirm`）；价值函数发散类动作除外（本身已要求连续 2 个 200 迭代窗口超阈值），plateau 类调参动作除外（非破坏性，自带冷却）。
 
 启动方式（与训练进程解耦，nohup 常驻）：
 
 ```bash
 cd /home/css/work/unitree/rl/Geesun_robot_rl_lab
-nohup bash -c 'while true; do \
+nohup bash -c 'while true; do sleep 21600; \
   /home/css/miniconda3/envs/env_isaaclab_sim51/bin/python scripts/monitor_tb_check.py \
-  >> outputs/monitor/monitor.log 2>&1; sleep 14400; done' >/dev/null 2>&1 &
+  >> outputs/monitor/monitor.log 2>&1; done' >/dev/null 2>&1 &
 ```
+
+（`sleep` 放在前面：重启守护进程时不会立即重复检查，保持 6 小时节拍。）
 
 输出：
 
@@ -61,7 +68,7 @@ nohup bash -c 'while true; do \
      学习率变更也使用 fresh 重训。
 - **安全护栏**：`MIN_START_ITERS=1500` 之前不动；两次动作间隔 ≥ `MIN_ITERS_BETWEEN_ACTIONS=600`
   迭代且墙钟时间 ≥ 3 小时；迭代冷却按 run 独立计算，fresh run 的 step 归零不会被旧 run 卡住；
-  全局上限 `MAX_ACTIONS=8`，每个旋钮有独立预算；`init_noise_std`/`entropy_coef`/`desired_kl`
+  全局上限 `MAX_ACTIONS=16`，每个旋钮有独立预算；`init_noise_std`/`entropy_coef`/`desired_kl`
   等"加压"规则还额外要求 **plateau 且课程未解锁到上限**，避免打扰已收敛的良好 run。
 - **恶化判据**：使用最近 400 迭代前/后四分位数的中位数比较。单条噪声曲线不会触发重训；需
   reward 下降 ≥20% 且至少一项（xy/yaw 误差上升 ≥15%、time_out 下降 ≥10%、bad_orientation
@@ -74,6 +81,21 @@ nohup bash -c 'while true; do \
   - 回滚最近一次改动并重启：`python scripts/autotune.py --rollback`；
   - 审计：`outputs/autotune/ledger.jsonl`（逐条动作/旧值/新值/原因/备份路径）、
     `outputs/autotune/state.json`、源码备份在 `outputs/autotune/backups/`。
+
+### 1.2 曲线中文备注（TensorBoard TEXT 页显示）
+
+TensorBoard 曲线卡片没有备注字段，中文说明通过 **TEXT 面板**显示：
+
+```bash
+/home/css/miniconda3/envs/env_isaaclab_sim51/bin/python scripts/tb_notes.py   # 生成/刷新中文备注
+```
+
+然后在 TensorBoard（`--logdir logs/rsl_rl/`）顶部切到 **TEXT** 页，左侧勾选 run
+**`00_曲线中文说明`**：`00_使用说明（先看这条）` 是分组速查 + 判读口诀，其余每个 tag
+一条备注（中文名 / 含义 / 判读方式），覆盖全部 65 条训练曲线。备注的唯一来源是
+`scripts/tb_notes.py` 的 `NOTES` 字典，修改后重跑即刷新；`--list` 可在终端打印对照表。
+说明 run 与训练 run 同级（`logs/rsl_rl/00_曲线中文说明/`），不会被监控的
+`logs/rsl_rl/unitree_go2_velocity` 扫描到，对训练与监控零影响。
 
 ## 2. TensorBoard 判读要点
 

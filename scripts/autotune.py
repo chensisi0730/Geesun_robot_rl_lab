@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Rule-based auto-tuner for the GO2 velocity training loop.
 
-The 4-hourly monitor (``scripts/monitor_tb_check.py``) invokes this script as a **subprocess**,
+The 6-hourly monitor (``scripts/monitor_tb_check.py``) invokes this script as a **subprocess**,
 so any edit to the rules / knob registry below takes effect on the next check without
 restarting the monitor ("随时调整代码重新训练").
 
@@ -23,6 +23,9 @@ Safety
 * Kill switch: create ``outputs/autotune/DISABLED`` to stop all automatic actions.
 * ``--dry-run`` prints the plan without touching anything.
 * ``--rollback`` restores the newest backup and relaunches.
+* Transient tolerance: degradation-class actions must reproduce at ``CONFIRM_CHECKS``
+  consecutive checks of the same run before training is stopped/restarted; a one-off dip
+  (terrain_levels, value_function, ...) that recovers is only recorded in the state/ledger.
 * Global cap ``MAX_ACTIONS`` and per-knob budgets; ``MIN_START_ITERS`` /
   ``MIN_ITERS_BETWEEN_ACTIONS`` / ``MIN_SECONDS_BETWEEN_ACTIONS`` prevent acting on
   startup transients or thrashing. Iteration cooldowns are run-local because fresh runs
@@ -150,7 +153,7 @@ WINDOW = 400                  # iterations used for trend/plateau detection
 MIN_START_ITERS = 1500        # never act before this many iterations
 MIN_ITERS_BETWEEN_ACTIONS = 600
 MIN_SECONDS_BETWEEN_ACTIONS = 3 * 60 * 60
-MAX_ACTIONS = 8               # global cap across the whole campaign
+MAX_ACTIONS = 16              # global cap across the whole campaign
 
 # A single noisy scalar must never restart an expensive run. Degradation requires either
 # reward to fall together with another adverse curve, or at least two non-reward curves to
@@ -164,6 +167,14 @@ VALUE_LOSS_ABORT = 100.0
 VALUE_LOSS_WINDOW = 200
 MIN_DIVERGENCE_SAMPLES = 50
 LAUNCH_GRACE_S = 3.0
+
+# Transient tolerance for degradation-class actions (curve degradation / rising falls): the
+# observation must repeat at two consecutive checks (6 h apart) before training is stopped
+# and restarted. Curves such as terrain_levels or value_function often dip briefly and
+# recover on their own; a one-off observation is recorded but never acted upon. Exempt:
+# the value-divergence rule (already needs two consecutive elevated 200-iteration windows)
+# and plateau/learning-pressure rules (non-destructive, own cooldowns).
+CONFIRM_CHECKS = 2
 
 
 def log(msg: str) -> None:
@@ -220,10 +231,18 @@ def diagnose(tb: dict) -> dict:
     f["time_out_med"] = tbc.median(tbc.window(tb.get("Episode_Termination/time_out", []), WINDOW))
     value_loss = tbc.window(tb.get("Loss/value_function", []), VALUE_LOSS_WINDOW)
     f["value_loss_med"] = tbc.median(value_loss)
+    # Transient tolerance: also require the *preceding* 200-iteration window to be already
+    # elevated (> 10% of the abort threshold). A single-window spike usually recovers on its
+    # own and must not burn the LR-reduction + fresh-restart action (a fresh restart also
+    # drops the terrain curriculum to 0); a sustained divergence is caught at the next
+    # 6-hourly check at the latest.
+    prev_value_loss = tbc.window(tb.get("Loss/value_function", []), VALUE_LOSS_WINDOW * 2)
+    f["value_loss_prev_med"] = tbc.median(prev_value_loss[:-VALUE_LOSS_WINDOW])
     f["value_diverged"] = (
         len(value_loss) >= MIN_DIVERGENCE_SAMPLES
         and f["value_loss_med"] is not None
         and f["value_loss_med"] > VALUE_LOSS_ABORT
+        and (f["value_loss_prev_med"] is None or f["value_loss_prev_med"] > VALUE_LOSS_ABORT / 10.0)
     )
     lr = tbc.window(tb.get("Loss/learning_rate", []), WINDOW)
     f["lr_pinned_frac"] = round(sum(1 for v in lr if v <= 1.1e-5) / len(lr), 3) if lr else 0.0
@@ -373,33 +392,38 @@ def decide(f: dict, state: dict):
 
     # Learning-pressure rules additionally require plateau + unfinished curriculum, so a
     # healthy converged run (high noise is not needed once everything is maxed) is left alone.
+    # The 5th tuple field marks degradation-class rules: those need CONFIRM_CHECKS consecutive
+    # observations (see the confirmation gate in main) because their action stops + restarts
+    # training and curve dips may recover on their own.
     learning_stalled = f["plateau"] and f["range_incomplete"]
     degradation = ", ".join(f["degradation_reasons"])
     rules = [
         (f["value_diverged"], "learning_rate",
-         f"value function diverged (last {VALUE_LOSS_WINDOW} median={f['value_loss_med']:.3g})", 3),
+         f"value function diverged, sustained (last {VALUE_LOSS_WINDOW} median={f['value_loss_med']:.3g}, "
+         f"prev window median={'%.3g' % f['value_loss_prev_med'] if f['value_loss_prev_med'] is not None else 'n/a'})", 3, False),
         (f["degrading"] and "bad_orientation" in degradation, "flat_orientation_l2",
-         f"confirmed curve degradation ({degradation})", 2),
+         f"curve degradation ({degradation})", 2, True),
         (f["degrading"] and "err_yaw" in degradation, "track_ang_vel_z",
-         f"confirmed curve degradation ({degradation})", 2),
+         f"curve degradation ({degradation})", 2, True),
         (f["degrading"] and "err_xy" in degradation, "track_lin_vel_xy",
-         f"confirmed curve degradation ({degradation})", 2),
+         f"curve degradation ({degradation})", 2, True),
         (learning_stalled and f["exploration_collapsed"], "init_noise_std",
-         "plateaued with collapsed exploration (mean_noise_std<0.2)", 1),
+         "plateaued with collapsed exploration (mean_noise_std<0.2)", 1, False),
         (learning_stalled and f["lr_pinned_frac"] > 0.4, "desired_kl",
-         "plateaued with adaptive LR pinned at its floor", 2),
-        (f["falls_rising"], "flat_orientation_l2", "fall rate rising", 2),
-        (f["yaw_stuck"], "track_ang_vel_z", "yaw gate stuck + poor yaw tracking", 2),
-        (f["lin_stuck"], "track_lin_vel_xy", "lin gate stuck + poor xy tracking", 2),
-        (f["plateau"] and f["yaw_stuck"], "success_yaw", "yaw gate stuck -> relax yaw threshold", 2),
-        (f["plateau"] and f["lin_stuck"], "success_xy", "lin gate stuck -> relax xy threshold", 2),
-        (learning_stalled, "entropy_coef", "plateaued -> more exploration bonus", 2),
-        (learning_stalled, "desired_kl", "plateaued -> allow larger policy updates", 3),
+         "plateaued with adaptive LR pinned at its floor", 2, False),
+        (f["falls_rising"], "flat_orientation_l2", "fall rate rising", 2, True),
+        (f["yaw_stuck"], "track_ang_vel_z", "yaw gate stuck + poor yaw tracking", 2, False),
+        (f["lin_stuck"], "track_lin_vel_xy", "lin gate stuck + poor xy tracking", 2, False),
+        (f["plateau"] and f["yaw_stuck"], "success_yaw", "yaw gate stuck -> relax yaw threshold", 2, False),
+        (f["plateau"] and f["lin_stuck"], "success_xy", "lin gate stuck -> relax xy threshold", 2, False),
+        (learning_stalled, "entropy_coef", "plateaued -> more exploration bonus", 2, False),
+        (learning_stalled, "desired_kl", "plateaued -> allow larger policy updates", 3, False),
     ]
-    for cond, knob, reason, budget in rules:
+    for cond, knob, reason, budget, needs_confirm in rules:
         if cond:
             act = pick(knob, reason, budget)
             if act:
+                act["needs_confirm"] = needs_confirm
                 return act
     return None
 
@@ -640,10 +664,31 @@ def main() -> int:
     action = decide(f, state)
     if action is None:
         log("no intervention needed")
+        state.pop("pending_confirm", None)  # the degradation did not reproduce -> forgive
         if not args.dry_run:
             state["last_observation"] = observation(f, run_dir.name)
             save_state(state)
         return 0
+
+    # Transient tolerance gate: degradation-class actions must be observed at CONFIRM_CHECKS
+    # consecutive checks of the same run before stopping/restarting training.
+    if action.get("needs_confirm") and not args.force:
+        pend = state.get("pending_confirm") or {}
+        count = pend.get("count", 0) + 1 if (
+            pend.get("knob") == action["knob"] and pend.get("run") == run_dir.name
+        ) else 1
+        if count < CONFIRM_CHECKS:
+            log(f"PLAN (pending {count}/{CONFIRM_CHECKS}): {action['knob']} {action['old']:g} -> "
+                f"{action['new']:g} ({action['reason']}) - transient tolerated, confirm at the next check")
+            if not args.dry_run:
+                state["pending_confirm"] = {
+                    "knob": action["knob"], "run": run_dir.name, "count": count,
+                    "reason": action["reason"], "ts": time.time(),
+                }
+                state["last_observation"] = observation(f, run_dir.name)
+                save_state(state)
+            return 0
+        log(f"degradation confirmed at {count}/{CONFIRM_CHECKS} consecutive checks - acting")
 
     log(f"PLAN: {action['knob']} {action['old']:g} -> {action['new']:g} ({action['reason']}) "
         f"restart={KNOBS[action['knob']]['restart']}")
@@ -678,6 +723,7 @@ def main() -> int:
     state["last_action_step"] = f["step"]
     state["last_action_run"] = run_dir.name
     state["last_action_ts"] = time.time()
+    state.pop("pending_confirm", None)
     state["last_observation"] = observation(f, run_dir.name)
     save_state(state)
     append_ledger(entry)

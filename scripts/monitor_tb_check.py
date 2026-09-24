@@ -1,9 +1,10 @@
 #!/usr/bin/env python
-"""4-hourly health check for the GO2 velocity RL run.
+"""6-hourly health check for the GO2 velocity RL run.
 
-Run manually or from the nohup loop::
+Run manually or from the nohup loop (sleep first so a (re)started daemon keeps the
+existing check cadence instead of double-checking)::
 
-    nohup bash -c 'while true; do $PY scripts/monitor_tb_check.py >> outputs/monitor/monitor.log 2>&1; sleep 14400; done' &
+    nohup bash -c 'while true; do sleep 21600; $PY scripts/monitor_tb_check.py >> outputs/monitor/monitor.log 2>&1; done' &
 
 Per check it
   1. verifies the training process is alive -- if dead, auto-resumes from the latest
@@ -16,7 +17,12 @@ Per check it
      auto-resumed (marker auto-clears once a newer run writes TensorBoard data);
   3. snapshots the key TensorBoard curves (last 200 iterations) of the newest run dir;
   4. raises anomaly flags against the previous snapshot (terrain promotion with degraded
-     tracking/reward, LR pinned at the floor, termination increase, new PhysX overflow);
+     tracking/reward, LR pinned at the floor, termination increase, new PhysX overflow).
+     Transient tolerance: a value_function spike or a terrain_levels drop is only reported
+     as WARN and must persist into the next check (6 h later) to escalate to CRITICAL/action
+     - short-term deterioration that recovers on its own does not stop or restart training;
+     cross-check comparisons (reward/terrain deltas) are skipped when the run changed, since
+     a fresh restart resets the curriculum and the reward baseline;
   5. writes a full table of *every* TensorBoard scalar with window stats + trend to
      outputs/monitor/curves.md;
   6. while the run is alive and healthy, invokes scripts/autotune.py as a subprocess: it
@@ -290,11 +296,16 @@ def main() -> None:
     state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
     prev_snap = state.get("snap", {})
     prev_check = state.get("last_check", 0.0)
+    prev_run = state.get("snap_run")
 
     actions: list[str] = []
     flags: list[str] = []
 
     run_dir = latest_run_dir()
+    # Cross-check comparisons are only meaningful inside one run: a fresh restart resets the
+    # terrain curriculum to 0 and shifts the reward baseline, which would otherwise show up
+    # as fake "degradation" right after every autotune fresh relaunch.
+    same_run = run_dir is not None and prev_run == run_dir.name
     note = clear_stale_marker(state, run_dir)
     if note:
         actions.append(note)
@@ -332,11 +343,29 @@ def main() -> None:
             actions.append(f"TB read failed: {e!r}")
 
     vl = snap.get("value_loss", {})
+    prev_vl = prev_snap.get("value_loss", {})
     value_diverged = vl.get("n", 0) >= 50 and vl.get("med", 0.0) > VALUE_LOSS_ABORT
+    # The confirmation is only valid against the previous check of the SAME run (a fresh
+    # restart starts from new weights and must re-prove itself before being "sustained").
+    prev_value_diverged = (
+        same_run and prev_vl.get("n", 0) >= 50 and prev_vl.get("med", 0.0) > VALUE_LOSS_ABORT
+    )
     if value_diverged:
-        reason = f"value_function loss median {vl['med']} > {VALUE_LOSS_ABORT} (diverged)"
-        flags.append(f"CRITICAL: {reason}")
-        actions.append("value-function divergence delegated to autotune for LR reduction + fresh restart")
+        if prev_value_diverged:
+            reason = (
+                f"value_function loss median {vl['med']} > {VALUE_LOSS_ABORT}, "
+                f"still above at the previous check (sustained)"
+            )
+            flags.append(f"CRITICAL: {reason}")
+            actions.append("value-function divergence delegated to autotune for LR reduction + fresh restart")
+        else:
+            # Transient tolerance: a single bad 200-iteration window usually recovers on its
+            # own; reconfirm at the next 6-hourly check before forcing the LR-reduction action.
+            value_diverged = False
+            flags.append(
+                f"WARN: value_function median {vl['med']} > {VALUE_LOSS_ABORT} "
+                f"(transient tolerated - reconfirm next check)"
+            )
 
     if not alive:
         flags.append("CRITICAL: training process DEAD")
@@ -357,12 +386,13 @@ def main() -> None:
         flags.append(f"WARN: LR pinned at 1e-5 for {snap['lr_pin_frac'] * 100:.0f}% of last {LAST_N} iters")
     prev_reward = prev_snap.get("reward", {}).get("med")
     if (
-        prev_reward
+        same_run
+        and prev_reward
         and snap.get("reward", {}).get("n", 0) >= 50
         and snap["reward"]["med"] < 0.6 * prev_reward
     ):
         flags.append(f"WARN: mean_reward {snap['reward']['med']} < 0.6 x previous {prev_reward}")
-    if snap and prev_snap:
+    if snap and prev_snap and same_run:
         d_level = snap.get("level", {}).get("last", 0.0) - prev_snap.get("level", {}).get("last", 0.0)
         reward_now = snap.get("reward", {}).get("med")
         reward_before = prev_snap.get("reward", {}).get("med")
@@ -374,6 +404,18 @@ def main() -> None:
         if d_level > 0.05 and err_now is not None and err_before is not None:
             if err_now > 1.15 * err_before:
                 flags.append(f"WARN: terrain +{d_level:.3f}, err_xy {err_before:.3f} -> {err_now:.3f}")
+        # Short-term terrain_levels drop is tolerated (the curriculum re-levels on its own,
+        # and a fresh autotune restart drops it to 0 by design): report it but do not act;
+        # a real regression will still be visible at the next check.
+        if d_level < -0.5:
+            flags.append(
+                f"WARN: terrain_levels {prev_snap['level']['last']:.2f} -> {snap['level']['last']:.2f} "
+                f"(short-term drop tolerated - recheck next check)"
+            )
+    elif snap and prev_snap:
+        actions.append(
+            f"note: cross-check comparison skipped (run changed: {prev_run} -> {run_dir.name if run_dir else 'N/A'})"
+        )
 
     # Auto-tuner: only while the run is alive and no stop marker is set. It runs
     # as a subprocess so edits to scripts/autotune.py are picked up on the next check, and it
@@ -423,6 +465,7 @@ def main() -> None:
         f.write("\n".join(lines) + "\n")
 
     state["snap"] = snap
+    state["snap_run"] = run_dir.name if run_dir is not None else None
     state["last_check"] = time.time()
     STATE_PATH.write_text(json.dumps(state, indent=2))
     print(f"[{now_str()}] alive={alive} overflow_new={ov} run={run_dir.name if run_dir else 'N/A'} flags={flags or 'none'}")
