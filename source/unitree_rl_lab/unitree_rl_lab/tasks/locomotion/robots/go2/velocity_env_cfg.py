@@ -253,10 +253,11 @@ class ObservationsCfg:
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100))
         joint_effort = ObsTerm(func=mdp.joint_effort, scale=0.01, clip=(-100, 100))
         last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))
-        # height_scanner = ObsTerm(func=mdp.height_scan,
-        #     params={"sensor_cfg": SceneEntityCfg("height_scanner")},
-        #     clip=(-1.0, 5.0),
-        # )
+        # height_scanner (ABLATION: critic-only privileged obs, policy obs unchanged)
+        height_scanner = ObsTerm(func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+            clip=(-1.0, 5.0),
+        )
 
         # def __post_init__(self):
         #     self.history_length = 5
@@ -274,7 +275,7 @@ class RewardsCfg:
         func=mdp.track_lin_vel_xy_exp, weight=1.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
     track_ang_vel_z = RewTerm(
-        func=mdp.track_ang_vel_z_exp, weight=1.25, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
+        func=mdp.track_ang_vel_z_exp, weight=1.50, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
 
     # -- base

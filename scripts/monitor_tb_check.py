@@ -51,7 +51,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tb_curves as tbc  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
-RUNS_ROOT = REPO / "logs" / "rsl_rl" / "unitree_go2_velocity"
+RUNS_ROOT = REPO / "logs" / "rsl_rl"
+# Follow whichever Go2 experiment is live (velocity, _ht ablation variants, ...).
+RUNS_GLOB = "unitree_go2_velocity*/*"
 MON_DIR = REPO / "outputs" / "monitor"
 STATE_PATH = MON_DIR / "state.json"
 REPORT_PATH = MON_DIR / "report.md"
@@ -103,7 +105,7 @@ def train_pids() -> list[int]:
 def latest_run_dir() -> Path | None:
     best: tuple[float, Path] | None = None
     if RUNS_ROOT.exists():
-        for d in RUNS_ROOT.iterdir():
+        for d in RUNS_ROOT.glob(RUNS_GLOB):
             if not d.is_dir():
                 continue
             mts = [p.stat().st_mtime for p in d.glob("events.out.tfevents.*")]
@@ -193,11 +195,23 @@ def try_auto_resume(state: dict, run_dir: Path | None) -> str:
         return "no checkpoint available - manual restart needed"
     ckpt = ckpts[-1]
     logf = open("/tmp/train_go2_auto.log", "ab")
+    # The velocity command's debug_vis spawns a remote USD (arrow marker) at startup;
+    # isaaclab's check_usd_path_with_timeout gives up after 300 s when the local proxy is
+    # down (e.g. right after a machine restart), which kills the resume with FileNotFoundError.
+    # Only set the proxy env when the port actually accepts connections; direct access to the
+    # S3 URL is a verified working fallback (2026-09-24).
+    proxy_env: dict = {}
+    try:
+        import socket
+
+        with socket.create_connection(("127.0.0.1", 7897), timeout=2):
+            proxy_env = {"https_proxy": "http://127.0.0.1:7897", "http_proxy": "http://127.0.0.1:7897"}
+    except OSError:
+        pass
     env = dict(
         os.environ,
         ISAACLAB_PATH="/home/css/work/unitree/rl/unitree_Robert/isaaclab/IsaacLab",
-        https_proxy="http://127.0.0.1:7897",
-        http_proxy="http://127.0.0.1:7897",
+        **proxy_env,
     )
     cmd = [
         PY, str(REPO / "scripts" / "rsl_rl" / "train.py"), "--headless",

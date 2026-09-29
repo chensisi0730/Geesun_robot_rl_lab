@@ -51,6 +51,9 @@ class UnitreeGo2PPORunnerCfg(BasePPORunnerCfg):
     stabilise late training (see the curve analysis in ``doc/training_monitoring.md``).
     """
 
+    # ABLATION (2026-09-24): height_scanner critic-obs run; revert to "" after launch.
+    experiment_name = "unitree_go2_velocity_ht"
+
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=0.8,
         actor_hidden_dims=[512, 256, 128],
@@ -70,4 +73,31 @@ class UnitreeGo2PPORunnerCfg(BasePPORunnerCfg):
         lam=0.95,
         desired_kl=0.025,
         max_grad_norm=0.8,
+    )
+
+
+@configclass
+class UnitreeG1PPORunnerCfg(BasePPORunnerCfg):
+    """PPO for the G1 29-DoF velocity task.
+
+    The 2026-09-07 run (27k iters, shared adaptive schedule) stalled: the KL-adaptive LR
+    collapsed to ~0 within the first ~100 iterations (``Loss/learning_rate`` == 0 from iter
+    1001 on) while ``bad_orientation`` stayed at ~0.98 and the command range frozen at ±0.1.
+    Minimal change (2026-09-24): keep everything from :class:`BasePPORunnerCfg` but use a
+    constant LR so early learning is not frozen; see ``doc/training_monitoring.md`` §4.6.
+    """
+
+    algorithm = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=1.0e-3,
+        schedule="constant",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
     )

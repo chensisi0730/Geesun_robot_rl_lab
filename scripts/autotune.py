@@ -53,7 +53,9 @@ from pathlib import Path
 import tb_curves as tbc
 
 REPO = Path(__file__).resolve().parents[1]
-RUNS_ROOT = REPO / "logs" / "rsl_rl" / "unitree_go2_velocity"
+RUNS_ROOT = REPO / "logs" / "rsl_rl"
+# Follow whichever Go2 experiment is live (velocity, _ht ablation variants, ...).
+RUNS_GLOB = "unitree_go2_velocity*/*"
 AUTODIR = REPO / "outputs" / "autotune"
 BACKUP_DIR = AUTODIR / "backups"
 LEDGER = AUTODIR / "ledger.jsonl"
@@ -187,7 +189,7 @@ def log(msg: str) -> None:
 def latest_run_dir() -> Path | None:
     best: tuple[float, Path] | None = None
     if RUNS_ROOT.exists():
-        for d in RUNS_ROOT.iterdir():
+        for d in RUNS_ROOT.glob(RUNS_GLOB):
             if not d.is_dir():
                 continue
             mts = [p.stat().st_mtime for p in d.glob("events.out.tfevents.*")]

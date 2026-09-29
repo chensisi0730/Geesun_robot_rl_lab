@@ -177,3 +177,118 @@ done
 3. `Curriculum/command_ranges/*` 显示 x/y 命令边界均为 `±0.25 m/s`；
 4. `Curriculum/terrain_performance_by_type/*` 标签在 episode reset 后出现；
 5. `grep -c 'Patch buffer overflow' <新日志>` 为 0。
+
+## 4. 地形与课程（terrain / terrain_levels / lin_vel_cmd_levels）设计逻辑
+
+### 4.1 地形布局（GO2，`velocity_env_cfg.py` 的 `COBBLESTONE_ROAD_CFG`）
+
+地形是一张 **10 行 × 20 列** 的网格：行 = 难度等级（terrain level 0–9），列 = 子地形类型
+（proportion 归一化后决定列数）：
+
+```
+            列 →   0-2          3-8            9-14           15-19
+                 ┌──────────┬───────────────┬───────────────┬──────────────┐
+  level 0 (最易) │          │               │               │              │
+  level 1        │   flat   │ random_rough  │     boxes     │ pyramid_     │
+  ...            │ (3 列)   │   (6 列)      │    (6 列)     │  stairs(5列) │
+  level 8        │  纯平面   │  随机起伏      │   随机方格块   │    金字塔阶梯   │
+  level 9 (最难) │          │  噪声 1–6 cm  │  块高 5–20 cm  │  台阶高5–23cm │
+                 └──────────┴───────────────┴───────────────┴──────────────┘
+  难度：行 0 障碍≈0 → 行 9 障碍最大；障碍物尺寸随 difficulty 线性缩放
+  每个 env 的当前行 = 它的 terrain_levels；max_init_terrain_level=2 →
+  spawn/respawn 时在 level [0,2] 内随机取行
+```
+
+| 子地形 | 列数 | 难度缩放（×difficulty） |
+|---|---|---|
+| flat | 3 | 无（所有行都是平面，作为保底/校准区） |
+| random_rough | 6 | 噪声高度 (0.01, 0.06) m |
+| boxes | 6 | 块高 (0.05, 0.2) m，网格宽 0.45 m |
+| pyramid_stairs | 5 | 台阶高 (0.05, 0.23) m，台阶宽 0.3 m |
+
+（`hf_pyramid_slope` / `pyramid_stairs_inv` 等类型当前被注释掉，见配置。）
+
+### 4.2 terrain_levels：逐 env 的异步"舒适难度"随机游走（有升有降）
+
+`mdp.terrain_levels_vel_strict` 在**每个 env 每个 episode 结束**时单独决策：
+
+| 条件（err = 该 episode 速度跟踪误差真均值） | 动作 |
+|---|---|
+| 存活到 time_out 且 `err_xy < 0.22` 且 `err_yaw < 0.30` | **升级** level+1（更难行） |
+| 摔倒（未 time_out）或 `err_xy > 0.40` 或 `err_yaw > 0.45` | **降级** level−1（更还行） |
+| 其余（0.22–0.40 / 0.30–0.45 滞回带内） | 保持不动 |
+
+- 逐 env 独立、异步：强 env 爬高行、弱 env 留在低行，互不拖累；
+  TB `Curriculum/terrain_levels` 是所有 env 当前等级的**均值**。
+- 设计意图：让每个 env 始终在"略难但可完成"的难度（ZPD）上训练；
+  升降阈值不对称（滞回带）避免在边界反复抖动。
+- **地形等级不在 rsl-rl checkpoint 中**：resume 后按 `max_init_terrain_level`（0–2）
+  重新随机初始化、再自行爬回——监控把这种短期下降按 WARN 容忍（§1 瞬态规则）。
+
+### 4.3 lin_vel_cmd_levels：全局窗口门控，只升不降，x/yaw 独立
+
+`mdp.gated_lin_vel_cmd_levels`（参数见 `CurriculumCfg`）：
+
+```
+ 滚动窗口（按 episode 累计：≥12000 env 步 且 ≥4000 个回合 时结算一次）
+        │ 结算
+        ├─ 线性门控：lin_success（存活 且 err_xy<0.25）≥ 0.90
+        │            且 time_out 率 ≥ 0.90 且 窗口 mean_err_xy ≤ 0.25
+        │      → streak += 1（任一不满足 streak = 0）
+        │      streak ≥ 2  → lin_vel_x 按 ±0.05 m/s 放宽（lin_vel_y 始终冻结）
+        └─ 偏航门控（独立）：yaw_success（存活 且 err_yaw<0.35）≥ 0.90
+                     且 time_out 率 ≥ 0.90 且 窗口 mean_err_yaw ≤ 0.35
+           → yaw_streak ≥ 2 → ang_vel_z 按 ±0.1 rad/s 放宽
+ 结算后窗口清零（兼作放宽后的"稳定期"，避免连续快速放宽）
+ 上限（limit_ranges）：x ±1.0，y ±0.4，yaw ±1.0
+ 当前范围写入 logs/rsl_rl/unitree_go2_velocity/curriculum_state.json
+ （rsl-rl checkpoint 不保存命令范围；fresh run 由 train.py 删除该文件）
+```
+
+- **只升不降**：窗口结算后的清零本身就是稳定期；范围给大后跟踪误差会自然上升，
+  由地形课程（逐 episode 的降级）快速吸收，速度范围无需回退，避免"升一点退一点"震荡。
+- **x 与 yaw 独立门控**：旧实现把 xy/yaw 合成一个成功率，yaw 跟不上时整个课程死锁。
+- 升级判据是"跟踪 + 存活"双指标，而不是 track reward 单指标——旧实现按 reward
+  每 ~2.7 h 无条件 +0.1，速度涨到 ±0.65 m/s 时价值函数发散（见 §2）。
+
+### 4.4 两者的关系（耦合回路）
+
+```
+                每个 episode 的速度跟踪误差 err_xy / err_yaw
+                        ┌───────────────┴───────────────┐
+                        ▼                               ▼
+   terrain_levels（逐 env，每 episode 决策）   velocity 门控（全局，每窗口决策）
+   升：存活 且 err<0.22/0.30 → level+1      升：success≥0.90 且 time_out 率≥0.90
+   降：摔倒 或 err>0.40/0.45 → level-1          （hold=2 个窗口）→ x +0.05 / yaw +0.1
+                        │                               │
+                        └─────── time_out 率（存活率）─────┘
+                                velocity 门控的硬约束
+```
+
+- 地形课程管"**在哪练**"（每个 env 的难度行），速度门控管"**要求多快**"（命令范围）；
+- 速度门控的硬约束是 time_out 率 ≥0.90：**只要还有地形频繁导致摔倒，
+  哪怕跟踪误差已经很小，速度范围也不会扩大**（当前 GO2 正是这种状态，见 4.5）；
+- 二者形成"交替爬升"循环：各类型地形成功率先上去 → time_out 率达标 → 速度范围放宽 →
+  跟踪变难、地形等级回落 → 再收敛 → 继续放宽，直到达到 `limit_ranges` 上限。
+
+### 4.5 如何稳定提高 terrain_levels 与 lin_vel_cmd_levels
+
+1. **先治最弱地形**：看 `Curriculum/terrain_performance_by_type/*_success_rate`，
+   把成功率最低的类型先提到 >0.8（手段按优先级：核对该类型障碍难度上限是否过陡 →
+   提高防滑动/足端奖励权重 → 检查该类型 level 是否长期贴地）。
+2. **不要手改 level 或命令范围**：课程是自调节的，手动干预只破坏消融对照基线
+   （terrain_levels 随 checkpoint 丢失本就需要自愈；命令范围由 sidecar 持久化）。
+3. 速度门控长期不动（`.../streak` 到不了 2）时，**先看 time_out 率**（摔倒），
+   再看跟踪误差——门控的三个条件里 time_out 率通常是先达标的瓶颈。
+4. 速度范围放宽到 ±0.5 m/s 以上后盯 `Loss/value_function`（发散保护见 §1）。
+5. 当前 GO2 状态（2026-09-24，iter ≈ 6000）：terrain 均值 5.7/9；
+   x=±0.25 m/s、yaw=±0.5 rad/s 尚未放宽——time_out 率 ≈0.80 < 0.90，
+   瓶颈是 boxes（成功率 0.52）与 pyramid_stairs（0.70）；flat/random_rough 已 >0.96。
+
+### 4.6 G1（29dof）对照
+
+- G1 目前用旧版课程：地形**全 flat**（9 行都是平面，level 无实际意义），
+  `lin_vel_cmd_levels` 是 reward 单指标门控（track reward/秒 > 权重×0.8 → ±0.1），
+  初始范围 ±0.1 m/s；
+- 27k 迭代仍停滞：`bad_orientation≈0.98`、terrain_levels≈0.09、x_max=0.1 未升级、
+  adaptive LR 衰减到 0（2026-09-24 诊断，见 `scripts/diagnose/g1_pd_hold.py` 相关记录）。

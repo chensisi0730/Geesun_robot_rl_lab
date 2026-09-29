@@ -49,7 +49,13 @@
     ```
 
     若仓库路径发生变化，请在当前仓库目录重新执行 `./unitree_rl_lab.sh -i`，
-    并用 `pip show unitree_rl_lab` 确认 `Location` 指向本仓库的 `source/unitree_rl_lab`。
+    并确认 editable 安装指向本仓库（editable 安装下 `pip show` 的 `Location` 显示的是
+    site-packages，不能直接反映真实路径，请用 import 检查）：
+
+    ```bash
+    python -c "import unitree_rl_lab; print(unitree_rl_lab.__file__)"
+    # 应输出 <本仓库>/source/unitree_rl_lab/unitree_rl_lab/__init__.py
+    ```
 - 下载 Unitree 机器人描述文件
 
   *方法一：使用 USD 文件*
@@ -105,6 +111,8 @@
     `tail -f /tmp/train_go2.log` 或 `tail -f /tmp/train_go2_resume.log`。
     当前 GO2 的 `height_scanner` 仍保留用于后续消融，但没有接入 policy/critic 观测；
     如需完全关闭传感器，还需移除场景传感器及其 `update_period` 配置。
+    地形布局与 `terrain_levels` / `lin_vel_cmd_levels` 课程的设计逻辑、
+    升降级条件与耦合关系，见 `doc/training_monitoring.md` 第 4 节。
 
   - 回放训练好的 GO2 策略：
 
@@ -309,7 +317,7 @@ grep -c 'Patch buffer overflow' /tmp/train_go2.log
 | 网格以 `package://dog1/meshes/...`（旧版）或 `package://dog921/meshes/...`（新版）引用（无 ROS 无法解析） | 重写为绝对路径 |
 | 旧版 dog1 导出：`Link_*_hip.STL` 为空文件（仅 80 字节头、0 个三角形），导入器会丢弃/崩溃 | 自动生成占位圆柱网格（半径 0.035 m、长 0.08 m、沿髋关节轴）；dog921 的 `link_*_hip.STL` 为真实网格（每个约 17 MB），直接复制 |
 | 旧版 dog1 导出：所有关节 `limit lower/upper/effort/velocity` 均为 0 或过窄，机器人无法运动 | 替换为合理范围（hip ±0.8，thigh -2.0~2.5 / 镜像，calf -2.5~0.5 / 镜像），effort=100，velocity=25；dog921 保留导出真实限位（hip ±0.873，thigh -3.49~1.57，calf -1.885~0） |
-| 在 `InteractiveScene` 创建过程中做 URDF 转换会使导入器死锁（Isaac Sim 5.1） | 先单独把 URDF 转成 USD（`ensure_geesun_dog_usd()`，按 mtime 缓存），场景再从 USD 生成 |
+| 在 `InteractiveScene` 创建过程中做 URDF 转换会使导入器死锁（Isaac Sim 5.1） | 先单独把 URDF 转成 USD（`ensure_geesun_dog_usd()`，`force_usd_conversion=True`：**每次启动都从 `geesun_dog_urdf/geesun-dog/dog1` 当前文件重新转换**（约 5~10 s，不依赖 mtime/资产哈希缓存，URDF 或网格任一更新都会被拾取）），场景再从 USD 生成 |
 
 > **注意（9/22 更新）：** 后小腿站立姿态由 `+1.4` 调整为 `-1.4`（`unitree.py` 的 `GEESUN_DOG_CFG` 与脚本 `base` 字典）——dog921 真实 calf 限位为 `[-1.885, 0]`，旧 `+1.4` 姿态会超出上限被 PhysX 限位钳住。
 >
@@ -353,9 +361,9 @@ python scripts/geesun_dog/move_geesun_dog.py --headless --num_steps 600 \
 
 1. `./unitree_rl_lab.sh -l` 能查到已注册任务 `Unitree-GeesunDog-Velocity`（位于 `tasks/locomotion/robots/geesun_dog/`，复用 Go2 的速度跟踪任务结构）。
 2. 控制台打印 `Using converted USD: /tmp/IsaacLab/geesun_dog/dog1.usd` 和 `Loaded robot joints: [12 个关节名]`。
-3. 控制台每 100 步打印 `[step N] joint_pos (rad):`，且 12 个关节值**持续振荡**（相邻打印之间没有数值冻结不变）。
+3. 控制台每 100 步打印 `[step N] joint_pos (rad):`，12 个关节值偏离站姿基准角（PD 跟踪滞后）且对角腿成对一致（fr≈hl、fl≈hr）。注意：默认 1.5 Hz 下每 100 步（2.0 s）恰为整数倍周期，稳态后相邻打印落在同一相位、数值相同属正常现象（不是卡死）；想从日志直接看到振荡，可改用非整周期频率（如 `--gait_freq 1.7`）或观察图形界面。
 4. 图形界面中机器人悬浮在离地约 1 m 处（基座被固定以便四条腿自由摆动），四条腿原地小跑。
-5. 首次启动需要几分钟：URDF→USD 转换（约 1 分钟）+ 着色器编译（约 3~5 分钟）。如需强制重新转换：`rm -rf /tmp/IsaacLab/geesun_dog`。
+5. 每次启动都会重新执行 URDF→USD 转换（`force_usd_conversion=True`，约 5~10 s，确保使用 `geesun_dog_urdf/geesun-dog/dog1` 的最新文件；Kit 日志中可见 `Saving Stage /tmp/IsaacLab/geesun_dog/dog1.usd`）。首次启动另需着色器编译（约 3~5 分钟）。如转换结果异常可 `rm -rf /tmp/IsaacLab/geesun_dog` 清除全部中间文件。
 
 **站立姿态验证（9/23，自由根测试结论）：**
 
@@ -371,6 +379,29 @@ python scripts/geesun_dog/move_geesun_dog.py --headless --num_steps 600 \
 | C9 | +1.0 | `--print_contact` | 钉住期间 12 关节施加力矩 ≈ 0 N·m —— 腿未被加载，身体由 pin 托着 |
 
 **结论：** 资产链与 12-DOF 控制正常（空中 trot 演示通过）；但默认 PD（k=30, b=1）下**尚不能长时间静立**。塌缩机制：dog921 足板是倾斜平板，接触面只有下前缘（前足缘在膝前方 0.28 m，形成踮脚力臂），软 PD 在落地瞬态后缓慢屈曲（2 s 内 calf 到达下限 -1.885），后大腿网格下端在后足后方戳地，身体前倾直至基座底面（z=-0.030）触地。后续改进方向（按优先级）：① 为足部增加平底 collider（如 0.1×0.08 m 盒体）替代倾斜足板的边缘接触；② 调高 PD 增益并配合临界阻尼；③ 直接上 RL 策略训练（`Unitree-GeesunDog-Velocity`），不依赖纯 PD 静立。
+
+**基础运动能力演示（9/24，A/B/C 日志演示，零代码改动）：**
+
+站姿修正后复测基础运动能力，headless 日志演示（日志在 `outputs/geesun_demo/`；当时 Go2 训练占用同一 GPU，步时偏慢，不影响结果正确性）：
+
+```bash
+# A：空中踏步（根固定 1 m，12-DOF 关节控制 + trot 对称性回归）
+python scripts/geesun_dog/move_geesun_dog.py --num_steps 400 --root_z 1.0 --headless
+# B：地面站立（自由根、实测高度 0.17、镜像站姿）
+python scripts/geesun_dog/move_geesun_dog.py --no_pin_root --root_z 0.17 --num_steps 400 --settle_steps 100 --print_contact --headless
+# C：地面原地踏步（自由根，1.5 Hz trot，25° 幅值）
+python scripts/geesun_dog/move_geesun_dog.py --no_pin_root --root_z 0.17 --num_steps 600 --settle_steps 100 --gait_freq 1.5 --amp_deg 25 --print_contact --headless
+```
+
+| 项 | 能力 | 结果 | 关键数据 |
+|---|---|---|---|
+| A | 12-DOF 关节控制 + 空中原地踏步 | **通过** | root 全程钉住稳定在 z=0.996；关节角偏离站姿基准（step 0 为精确站姿，step 100 起 12 关节全部偏离基准角），对角腿反相结构正确（如 fl_thigh=1.151 vs fr_thigh=0.915，分居 base=1.0 两侧；同相腿取值相近）；同相腿间微小不对称 ≤0.04 rad（自碰撞/初始接触扰动，不影响 trot 结构） |
+| B | 地面接触 + 静立 | **部分**（与 9/23 结论一致） | z：0.166 → 0.161（t=2 s，约可维持 2 s）→ 0.037（t=4 s 塌缩）→ 趴伏稳定；塌缩后 calf 施加力矩 10–12.7 N·m（腿在撑地但不足以支撑身体） |
+| C | 地面原地踏步 | **部分**（与 B 相同） | z 轨迹与 B 逐点一致（0.166→0.161→0.037→0.037）：1.5 Hz 原地踏步没有延缓塌缩；塌缩后腿部摆动被地面顶住，姿态保持趴伏 |
+
+> **采样说明：** 脚本每 100 步打印一次（dt=0.02 → 间隔 2.0 s），而 1.5 Hz 步态恰好每 2.0 s 完成 3 个整周期，因此日志中的关节角每次打印都处于同一步态相位（混叠），看起来"冻结"——打印点之间关节实际在连续振荡；C 与 B 的打印值逐点相同也部分源于此（另因塌缩后腿部被地面顶住，摆动幅度本身很小）。
+
+**结论：** 资产链、12-DOF 控制、地面接触与步态振荡均正常；地面运动的瓶颈仍是纯 PD 的支撑能力（k=30, b=1），与 9/23 站立姿态验证一致——改进优先级首选 RL 策略训练（`Unitree-GeesunDog-Velocity`），不依赖纯 PD 静立。
 
 **任务训练（可选）：**
 
