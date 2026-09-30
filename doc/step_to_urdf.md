@@ -16,7 +16,7 @@ python scripts/lingsi_d30w/step_to_urdf_d30w.py    # 读 STEP + 导出 17 个 ST
 | 产物 | 位置 | 说明 |
 |---|---|---|
 | `lingsi_d30w.urdf` | `geesun_dog_urdf/geesun-dog/lingsi_d30w/urdf/lingsi_d30w.urdf` | 17 link（base + 4×hip/thigh/calf/wheel）+ 16 关节（含 4 个 `continuous` 轮关节），`--variant lingsi_d30w` 的加载点 |
-| 17 个 STL | `geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/` | 真实几何（`base.stl` 64MB + 各 `link_*_*.stl` 6~35MB，共 321MB，mm→m 已换算） |
+| 17 个 STL | `geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/` | 真实几何（`base.stl` 已抽稀为 12 MB，原始 65 MB 见 §3c 与 git 历史；各 `link_*_*.stl` 6~35MB，共约 270MB，mm→m 已换算） |
 | 转换脚本 | `scripts/lingsi_d30w/step_to_urdf_d30w.py` | 路径相对脚本自身推导（`__file__` → 仓库根）。运行环境 `env_isaaclab_sim51` 已装 `cadquery-ocp 7.9.x`（序列类型叫 `TDF_LabelSequence`，无 `OCP.collections` 模块），脚本 import 兼容层覆盖两种 OCP 布局 |
 
 重跑转换或手工标定后，`urdf/lingsi_d30w.urdf` 会被重写/变更，用 `md5sum` 与变更记录核对即可。

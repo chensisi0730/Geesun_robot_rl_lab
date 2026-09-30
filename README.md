@@ -412,7 +412,20 @@ tensorboard --logdir logs/rsl_rl/
 
 > **注意：** 若关节位置冻结在固定姿态，说明腿与地面或彼此卡死——可在脚本中调高基座高度（`default_root[0, 2]`）或减小 `--amp_deg`。
 
-**lingsi_d30w（D30W 轮足，STEP 转换）：** 该变体目录目前只有 `D30W轮足外发.STEP`，需先转成 URDF + STL 才能被 `--variant lingsi_d30w` 加载（否则报 `FileNotFoundError: Geesun dog URDF is unavailable`）。转换流程（工具选择、STL 导出脚本、关节参数、URDF 模板、代码契约与验证步骤）见 [doc/step_to_urdf.md](doc/step_to_urdf.md)。
+**lingsi_d30w（D30W 轮足，STEP 转换）：** 变体目录现已含转换好的 `urdf/lingsi_d30w.urdf` + 17 个 STL
+（17 link：base + 4×hip/thigh/calf/wheel；16 关节，其中 4 个 `joint_*_wheel` 为 `continuous` 轮关节），
+可直接加载：
+
+```bash
+python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --headless --num_steps 400
+# 轮关节按 --wheel_speed 匀速自转（默认 10 rad/s，0 = 锁死只动腿）
+```
+
+注意：关节 origin 由 STEP 装配树自动解析，**尚待实测标定**；`base.stl` 已抽稀为 23.7 万面 / 12 MB
+（全精度 65 MB 版可从 git 历史找回，见 [doc/step_to_urdf.md](doc/step_to_urdf.md) §3c）；
+原始 `D30W轮足外发.STEP`（204 MB）保留在变体目录但不入 git（见 .gitignore）。
+重新转换的完整流程（工具选择、STL 导出脚本、关节参数、URDF 模板、代码契约与验证步骤）
+见 [doc/step_to_urdf.md](doc/step_to_urdf.md)。
 
 ## 部署
 
