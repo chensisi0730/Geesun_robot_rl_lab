@@ -202,7 +202,7 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py --task U
 
 ## 验证训练结果
 
-训练完成后，建议先目视回放，再进行平地和复杂地形定量测试。
+训练完成后，建议先目视回放，再进行平地和复杂地形定量测试
 
 ### 1. 复杂地形回放
 
@@ -411,6 +411,8 @@ tensorboard --logdir logs/rsl_rl/
 ```
 
 > **注意：** 若关节位置冻结在固定姿态，说明腿与地面或彼此卡死——可在脚本中调高基座高度（`default_root[0, 2]`）或减小 `--amp_deg`。
+
+**lingsi_d30w（D30W 轮足，STEP 转换）：** 该变体目录目前只有 `D30W轮足外发.STEP`，需先转成 URDF + STL 才能被 `--variant lingsi_d30w` 加载（否则报 `FileNotFoundError: Geesun dog URDF is unavailable`）。转换流程（工具选择、STL 导出脚本、关节参数、URDF 模板、代码契约与验证步骤）见 [doc/step_to_urdf.md](doc/step_to_urdf.md)。
 
 ## 部署
 

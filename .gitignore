@@ -72,6 +72,8 @@ session-ses_*.md
 *.obj
 *.mtl
 *.STL
+# Geesun dog D30W wheel-leg original STEP (204 MB CAD source, keep locally; see doc/step_to_urdf.md)
+geesun_dog_urdf/geesun-dog/lingsi_d30w/D30W轮足外发.STEP
 # Geesun dog asset meshes are required by the URDF, keep them in the repo
 !unitree_model/geesun_dog/**/*.STL
 **/env.yaml

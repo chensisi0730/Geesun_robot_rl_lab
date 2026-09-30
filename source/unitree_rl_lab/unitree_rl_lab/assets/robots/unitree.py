@@ -734,6 +734,21 @@ _GEESEN_DOG_CANDIDATES = [
 ]
 GEESUN_DOG_DIR = next((d for d in _GEESEN_DOG_CANDIDATES if os.path.isdir(d)), _GEESEN_DOG_CANDIDATES[0])
 
+# Robot asset variant = sub-directory under <GEESUN_DOG_DIR>/geesun-dog/. "dog1" (default)
+# keeps the legacy temp paths and behaviour byte-identical for ablation runs; other variants
+# (e.g. "lingsi_d30w") get their own per-variant temp area so their URDF/USD never collide
+# with dog1's. Select via the GEESUN_DOG_VARIANT environment variable before import
+# (scripts/geesun_dog/move_geesun_dog.py --variant does this).
+GEESUN_DOG_VARIANT = os.environ.get("GEESUN_DOG_VARIANT", "dog1")
+
+
+def _geesun_dog_temp_paths() -> tuple:
+    """Return (temp_pkg_dir, temp_urdf_path, usd_path) for the active variant."""
+    if GEESUN_DOG_VARIANT == "dog1":
+        return "/tmp/IsaacLab/geesun_dog", "/tmp/IsaacLab/geesun_dog/dog1.urdf", "/tmp/IsaacLab/geesun_dog/dog1.usd"
+    base = f"/tmp/IsaacLab/geesun_dog/{GEESUN_DOG_VARIANT}"
+    return base, f"{base}/{GEESUN_DOG_VARIANT}.urdf", f"{base}/{GEESUN_DOG_VARIANT}.usd"
+
 
 def _write_placeholder_cylinder_stl(path: str, radius: float, length: float, segments: int = 24) -> None:
     """Write a binary STL cylinder along the X axis (used to replace broken/empty meshes).
@@ -800,20 +815,33 @@ def _prepare_geesun_dog_urdf() -> None:
     """
     import re
     import shutil
+    import glob
 
-    tmp_pkg_dir = "/tmp/IsaacLab/geesun_dog"
-    tmp_mesh_dir = f"{tmp_pkg_dir}/meshes"
-    dog_pkg_dir = f"{GEESUN_DOG_DIR}/geesun-dog/dog1"
-    # Prefer the updated dog921 export (real meshes and joint limits); fall back to the
-    # legacy dog1 URDF so ablation runs against the old asset keep working.
-    src_urdf = f"{dog_pkg_dir}/urdf/dog921.urdf"
-    if not os.path.isfile(src_urdf):
-        src_urdf = f"{dog_pkg_dir}/urdf/dog1.urdf"
-    dst_urdf = f"{tmp_pkg_dir}/dog1.urdf"
-    if not os.path.isfile(src_urdf):
-        return
-    os.makedirs(tmp_mesh_dir, exist_ok=True)
-    has_real_limits = os.path.basename(src_urdf) == "dog921.urdf"
+    tmp_pkg_dir, dst_urdf, _ = _geesun_dog_temp_paths()
+    if GEESUN_DOG_VARIANT == "dog1":
+        tmp_mesh_dir = f"{tmp_pkg_dir}/meshes"
+        dog_pkg_dir = f"{GEESUN_DOG_DIR}/geesun-dog/dog1"
+        # Prefer the updated dog921 export (real meshes and joint limits); fall back to the
+        # legacy dog1 URDF so ablation runs against the old asset keep working.
+        src_urdf = f"{dog_pkg_dir}/urdf/dog921.urdf"
+        if not os.path.isfile(src_urdf):
+            src_urdf = f"{dog_pkg_dir}/urdf/dog1.urdf"
+        if not os.path.isfile(src_urdf):
+            return
+        os.makedirs(tmp_mesh_dir, exist_ok=True)
+        has_real_limits = os.path.basename(src_urdf) == "dog921.urdf"
+    else:
+        # Other variants (e.g. lingsi_d30w, generated from the STEP export) carry absolute
+        # mesh paths and their own joint limits; stage whichever URDF the variant dir holds.
+        dog_pkg_dir = f"{GEESUN_DOG_DIR}/geesun-dog/{GEESUN_DOG_VARIANT}"
+        candidates = sorted(glob.glob(f"{dog_pkg_dir}/urdf/*.urdf")) + sorted(
+            glob.glob(f"{dog_pkg_dir}/*.urdf")
+        )
+        src_urdf = candidates[0] if candidates else ""
+        if not src_urdf:
+            return
+        tmp_mesh_dir = f"{tmp_pkg_dir}/meshes"  # shared fixup loop below stays safe
+        has_real_limits = True
 
     # Handle both the legacy (Link_*) and updated (link_*) hip mesh name variants: the
     # legacy export ships empty meshes (80-byte header, zero triangles) which are replaced
@@ -903,12 +931,13 @@ def _prepare_geesun_dog_urdf() -> None:
     # Also set non-zero effort/velocity limits so the URDF is well-formed
     content = re.sub(r'effort="0"\s+velocity="0"', 'effort="100" velocity="25"', content)
 
-    # Skip writing if the temp URDF is already up-to-date (keeps mtime stable so the
-    # converted USD asset does not need to be regenerated on every import).
+    # Skip writing if the temp URDF is already up-to-date (keeps the URDF stable between
+    # imports; the USD conversion itself is forced on every launch via ensure_geesun_dog_usd).
     if os.path.exists(dst_urdf):
         with open(dst_urdf, "r") as f:
             if f.read() == content:
                 return
+    os.makedirs(os.path.dirname(dst_urdf), exist_ok=True)
     with open(dst_urdf, "w") as f:
         f.write(content)
 
@@ -916,26 +945,32 @@ def _prepare_geesun_dog_urdf() -> None:
 
 _prepare_geesun_dog_urdf()
 
-# Converted USD asset (generated from the fixed URDF by `scripts/geesun_dog/convert_geesun_dog.py`
-# or by any caller via `ensure_geesun_dog_usd()`). Converting the URDF during scene creation
+# Converted USD asset (rebuilt by any caller via `ensure_geesun_dog_usd()`, which always
+# re-converts from the fixed URDF). Converting the URDF during scene creation
 # (UrdfFileCfg spawn) deadlocks inside the URDF importer on this setup, so the scene spawns
-# from the pre-converted USD instead.
-GEESUN_DOG_USD = "/tmp/IsaacLab/geesun_dog/dog1.usd"
+# from the freshly converted USD instead. Paths follow the active GEESUN_DOG_VARIANT.
+GEESUN_DOG_TMP_DIR, GEESUN_DOG_TMP_URDF, GEESUN_DOG_USD = _geesun_dog_temp_paths()
 
 
 def ensure_geesun_dog_usd() -> str:
-    """Convert the Geesun dog URDF to USD if the converted asset does not exist yet.
+    """Convert the Geesun dog URDF to USD, always rebuilding from the current source files.
+
+    The fixed URDF (regenerated from ``geesun_dog_urdf/geesun-dog/<GEESUN_DOG_VARIANT>`` at
+    import time; "dog1" by default) is converted on every call with
+    ``force_usd_conversion=True``: no mtime/asset-hash cache, so any update under the variant
+    source dir (URDF text or meshes) is picked up without deleting the temp area. (The
+    converter's built-in lazy hash only covers the URDF text and would miss mesh-only
+    updates.) Costs ~5-10 s per launch.
 
     Returns:
         The path to the converted USD file.
     """
-    urdf_path = "/tmp/IsaacLab/geesun_dog/dog1.urdf"
+    urdf_path = GEESUN_DOG_TMP_URDF
     if not os.path.isfile(urdf_path):
         raise FileNotFoundError(
-            f"Geesun Dog URDF is unavailable: expected source under {GEESUN_DOG_DIR}"
+            f"Geesun dog URDF is unavailable for variant '{GEESUN_DOG_VARIANT}': expected source "
+            f"under {os.path.join(GEESUN_DOG_DIR, 'geesun-dog', GEESUN_DOG_VARIANT)}"
         )
-    if os.path.exists(GEESUN_DOG_USD) and os.path.getmtime(GEESUN_DOG_USD) >= os.path.getmtime(urdf_path):
-        return GEESUN_DOG_USD
 
     from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg
 
@@ -944,6 +979,7 @@ def ensure_geesun_dog_usd() -> str:
             asset_path=urdf_path,
             usd_dir=os.path.dirname(GEESUN_DOG_USD),
             usd_file_name=os.path.splitext(os.path.basename(GEESUN_DOG_USD))[0],
+            force_usd_conversion=True,  # no cache: rebuild the USD from the current source files every time
             make_instanceable=True,
             fix_base=False,
             joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(

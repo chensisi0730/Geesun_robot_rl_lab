@@ -15,6 +15,7 @@ in a trot-like gait (diagonal legs in phase).
 
 import argparse
 import math
+import os
 
 import torch
 
@@ -22,6 +23,12 @@ from isaaclab.app import AppLauncher
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Move all joints of the Geesun dog (dog1).")
+parser.add_argument(
+    "--variant",
+    type=str,
+    default="dog1",
+    help="Geesun asset variant directory under geesun_dog_urdf/geesun-dog/ (dog1, lingsi_d30w, ...)",
+)
 parser.add_argument("--num_steps", type=int, default=2000, help="Number of physics steps to run (0 = forever)")
 parser.add_argument(
     "--gait_freq", type=float, default=1.5, help="Gait frequency in Hz for the sinusoidal joint motion"
@@ -35,6 +42,7 @@ parser.add_argument("--settle_steps", type=int, default=100, help="In --no_pin_r
 parser.add_argument("--no_self_collision", action="store_true", help="Disable articulation self-collisions (the degenerate dog921 meshes can pinch the legs)")
 parser.add_argument("--stiffness", type=float, default=0.0, help="Override the actuator PD stiffness (0 = keep the cfg value)")
 parser.add_argument("--damping", type=float, default=0.0, help="Override the actuator PD damping (0 = keep the cfg value)")
+parser.add_argument("--wheel_speed", type=float, default=10.0, help="Rotation speed (rad/s) for wheel joints (names containing 'wheel', e.g. the lingsi_d30w wheel-legged variant); 0 holds them fixed")
 parser.add_argument("--print_contact", action="store_true", help="Print per-body net contact force z every 100 steps")
 
 
@@ -54,6 +62,11 @@ from isaaclab.assets import Articulation, ArticulationCfg, AssetBaseCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sim import SimulationContext
 from isaaclab.utils import configclass
+
+# select the asset variant before importing the robot module (it reads GEESUN_DOG_VARIANT
+# at import time to pick the source URDF dir and the temp URDF/USD paths)
+os.environ["GEESUN_DOG_VARIANT"] = args_cli.variant
+print(f"Geesun variant: {args_cli.variant}", flush=True)
 
 from unitree_rl_lab.assets.robots.unitree import GEESUN_DOG_CFG as ROBOT_CFG
 from unitree_rl_lab.assets.robots.unitree import ensure_geesun_dog_usd
@@ -181,9 +194,13 @@ def main():
     num_joints = robot.num_joints
     joint_names = robot.joint_names
     # order base/amp/phase to match robot.joint_names
-    base_vec = torch.tensor([base[n] for n in joint_names], dtype=torch.float32, device=sim.device)
-    amp_vec = torch.tensor([amp_map[n] for n in joint_names], dtype=torch.float32, device=sim.device)
-    phase_vec = torch.tensor([phase_map[n] for n in joint_names], dtype=torch.float32, device=sim.device)
+    # order base/amp/phase to match robot.joint_names; unknown joints (e.g. wheel joints on
+    # wheel-legged variants such as lingsi_d30w) default to base=0/amp=0 and are not KeyError'd
+    base_vec = torch.tensor([base.get(n, 0.0) for n in joint_names], dtype=torch.float32, device=sim.device)
+    amp_vec = torch.tensor([amp_map.get(n, 0.0) for n in joint_names], dtype=torch.float32, device=sim.device)
+    phase_vec = torch.tensor([phase_map.get(n, 0.0) for n in joint_names], dtype=torch.float32, device=sim.device)
+    # wheel joints (name contains 'wheel') spin at a constant --wheel_speed instead of the gait sinusoid
+    wheel_mask = torch.tensor(["wheel" in n for n in joint_names], dtype=torch.bool, device=sim.device)
 
     actions = robot.data.default_joint_pos.clone()  # (num_envs, num_joints), standing pose
     default_root = robot.data.default_root_state.clone()
@@ -204,6 +221,8 @@ def main():
     while simulation_app.is_running():
         t = step_idx * sim_dt
         actions[0] = base_vec + amp_vec * torch.sin(w * t + phase_vec)
+        if wheel_mask.any():
+            actions[0, wheel_mask] = args_cli.wheel_speed * t
         if not args_cli.no_pin_root or step_idx < args_cli.settle_steps:
             robot.write_root_state_to_sim(default_root)
         robot.set_joint_position_target(actions)

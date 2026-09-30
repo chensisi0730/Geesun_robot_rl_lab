@@ -1,0 +1,321 @@
+<?xml version="1.0"?>
+<robot name="lingsi_d30w">
+  <!-- Auto-generated from D30W轮足外发.STEP by scripts/lingsi_d30w/step_to_urdf_d30w.py
+       坐标系: x=前(+), y=左(+), z=下(+)；STL 与 joint origin 单位 m；关节原点待实测标定 -->
+  <link name="base_link">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/base.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/base.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="15.0"/>
+      <inertia ixx="0.15" ixy="0" ixz="0" iyy="0.15" iyz="0" izz="0.15"/>
+    </inertial>
+  </link>
+  <link name="link_fl_hip">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fl_hip.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fl_hip.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="2.0"/>
+      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+  <link name="link_fr_hip">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fr_hip.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fr_hip.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="2.0"/>
+      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+  <link name="link_hl_hip">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hl_hip.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hl_hip.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="2.0"/>
+      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+  <link name="link_hr_hip">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hr_hip.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hr_hip.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="2.0"/>
+      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+  <link name="link_fl_thigh">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fl_thigh.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fl_thigh.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="2.5"/>
+      <inertia ixx="0.03" ixy="0" ixz="0" iyy="0.03" iyz="0" izz="0.03"/>
+    </inertial>
+  </link>
+  <link name="link_fr_thigh">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fr_thigh.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fr_thigh.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="2.5"/>
+      <inertia ixx="0.03" ixy="0" ixz="0" iyy="0.03" iyz="0" izz="0.03"/>
+    </inertial>
+  </link>
+  <link name="link_hl_thigh">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hl_thigh.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hl_thigh.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="2.5"/>
+      <inertia ixx="0.03" ixy="0" ixz="0" iyy="0.03" iyz="0" izz="0.03"/>
+    </inertial>
+  </link>
+  <link name="link_hr_thigh">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hr_thigh.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hr_thigh.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="2.5"/>
+      <inertia ixx="0.03" ixy="0" ixz="0" iyy="0.03" iyz="0" izz="0.03"/>
+    </inertial>
+  </link>
+  <link name="link_fl_calf">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fl_calf.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fl_calf.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="2.0"/>
+      <inertia ixx="0.03" ixy="0" ixz="0" iyy="0.03" iyz="0" izz="0.03"/>
+    </inertial>
+  </link>
+  <link name="link_fr_calf">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fr_calf.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fr_calf.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="2.0"/>
+      <inertia ixx="0.03" ixy="0" ixz="0" iyy="0.03" iyz="0" izz="0.03"/>
+    </inertial>
+  </link>
+  <link name="link_hl_calf">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hl_calf.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hl_calf.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="2.0"/>
+      <inertia ixx="0.03" ixy="0" ixz="0" iyy="0.03" iyz="0" izz="0.03"/>
+    </inertial>
+  </link>
+  <link name="link_hr_calf">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hr_calf.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hr_calf.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="2.0"/>
+      <inertia ixx="0.03" ixy="0" ixz="0" iyy="0.03" iyz="0" izz="0.03"/>
+    </inertial>
+  </link>
+  <link name="link_fl_wheel">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fl_wheel.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fl_wheel.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="3.0"/>
+      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+  <link name="link_fr_wheel">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fr_wheel.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_fr_wheel.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="3.0"/>
+      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+  <link name="link_hl_wheel">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hl_wheel.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hl_wheel.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="3.0"/>
+      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+  <link name="link_hr_wheel">
+    <visual>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hr_wheel.stl" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="/home/css/work/unitree/rl/Geesun_robot_rl_lab/geesun_dog_urdf/geesun-dog/lingsi_d30w/meshes/link_hr_wheel.stl" scale="1 1 1"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="3.0"/>
+      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+  <joint name="joint_fl_hip" type="revolute">
+    <parent link="base_link"/>
+    <child link="link_fl_hip"/>
+    <origin xyz="0.237972 0.083694 0.000000" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.8" upper="0.8" effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_fl_thigh" type="revolute">
+    <parent link="link_fl_hip"/>
+    <child link="link_fl_thigh"/>
+    <origin xyz="0.118641 0.104685 -0.037504" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.0" upper="2.5" effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_fl_calf" type="revolute">
+    <parent link="link_fl_thigh"/>
+    <child link="link_fl_calf"/>
+    <origin xyz="0.113484 -0.000479 0.238830" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.5" upper="0.5" effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_fl_wheel" type="continuous">
+    <parent link="link_fl_calf"/>
+    <child link="link_fl_wheel"/>
+    <origin xyz="-0.156206 0.036061 0.226303" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_fr_hip" type="revolute">
+    <parent link="base_link"/>
+    <child link="link_fr_hip"/>
+    <origin xyz="0.237866 -0.085475 0.009329" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.8" upper="0.8" effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_fr_thigh" type="revolute">
+    <parent link="link_fr_hip"/>
+    <child link="link_fr_thigh"/>
+    <origin xyz="0.116383 -0.102906 -0.047154" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.0" upper="2.5" effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_fr_calf" type="revolute">
+    <parent link="link_fr_thigh"/>
+    <child link="link_fr_calf"/>
+    <origin xyz="0.118028 -0.000954 0.229723" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.5" upper="0.5" effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_fr_wheel" type="continuous">
+    <parent link="link_fr_calf"/>
+    <child link="link_fr_wheel"/>
+    <origin xyz="-0.167115 -0.034626 0.237960" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_hl_hip" type="revolute">
+    <parent link="base_link"/>
+    <child link="link_hl_hip"/>
+    <origin xyz="-0.237866 0.085475 0.009329" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.8" upper="0.8" effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_hl_thigh" type="revolute">
+    <parent link="link_hl_hip"/>
+    <child link="link_hl_thigh"/>
+    <origin xyz="0.041365 0.102904 -0.047121" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.0" upper="2.5" effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_hl_calf" type="revolute">
+    <parent link="link_hl_thigh"/>
+    <child link="link_hl_calf"/>
+    <origin xyz="0.111890 -0.000479 0.242638" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.5" upper="0.5" effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_hl_wheel" type="continuous">
+    <parent link="link_hl_calf"/>
+    <child link="link_hl_wheel"/>
+    <origin xyz="-0.160311 0.036061 0.223414" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_hr_hip" type="revolute">
+    <parent link="base_link"/>
+    <child link="link_hr_hip"/>
+    <origin xyz="-0.237972 -0.083694 0.000000" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.8" upper="0.8" effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_hr_thigh" type="revolute">
+    <parent link="link_hr_hip"/>
+    <child link="link_hr_thigh"/>
+    <origin xyz="0.039448 -0.104687 -0.038044" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.0" upper="2.5" effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_hr_calf" type="revolute">
+    <parent link="link_hr_thigh"/>
+    <child link="link_hr_calf"/>
+    <origin xyz="0.116878 -0.000954 0.232896" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.5" upper="0.5" effort="60" velocity="25"/>
+  </joint>
+  <joint name="joint_hr_wheel" type="continuous">
+    <parent link="link_hr_calf"/>
+    <child link="link_hr_wheel"/>
+    <origin xyz="-0.170671 -0.034626 0.235476" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="60" velocity="25"/>
+  </joint>
+</robot>
