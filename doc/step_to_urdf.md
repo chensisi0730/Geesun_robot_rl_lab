@@ -136,6 +136,23 @@ freecadcmd export_d30w_stl.py "geesun_dog_urdf/geesun-dog/lingsi_d30w/D30W轮足
 导出后检查：每个 STL > 84 字节（80 字节头 + 0 三角形的空文件会让 Isaac 导入器崩溃），
 且 `obj.Label` 与第 2 步的 link 命名一致。
 
+### 3c. 大网格抽稀（推荐）
+
+CAD 导出的网格面数往往过大（base 原始 131 万面 / 65 MB，超过 GitHub 50 MB 推荐值，
+仿真加载也偏重）。用 FreeCAD `decimate(tolerance, reduction)` 原地抽稀
+（tolerance=最大误差，单位米；reduction=最大缩减比例 [0,1]）：
+
+```python
+import Mesh
+m = Mesh.Mesh("meshes/base.stl")
+m.decimate(0.001, 0.95)  # 1mm 容差，最多缩减 95%
+m.write("meshes/base.stl")
+```
+
+base 实测：131 万 → 23.7 万面（65 MB → 12 MB），表面偏差 p99 < 0.5 mm，
+仅约 1.5% 的小细节顶点（加强筋/接口等）偏离 >10 mm，对行走仿真无影响。
+全精度网格可从 git 历史找回；wheel/hip 等其它大 mesh 同理可抽。
+
 ## 4. 确定关节参数
 
 从 CAD 装配约束/图纸读取每个关节的三项参数，填入 URDF：
