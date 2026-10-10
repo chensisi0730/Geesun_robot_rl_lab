@@ -55,9 +55,11 @@ class UnitreeGo2PPORunnerCfg(BasePPORunnerCfg):
     experiment_name = "unitree_go2_velocity_ht"
 
     policy = RslRlPpoActorCriticCfg(
+        # ABLATION (2026-10-09): 10x network width [512, 256, 128] -> [1536, 1024, 512]
+        # (0.48M -> 4.66M params total); revert after the ablation run.
         init_noise_std=0.8,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
+        actor_hidden_dims=[1536, 1024, 512],
+        critic_hidden_dims=[1536, 1024, 512],
         activation="elu",
     )
     algorithm = RslRlPpoAlgorithmCfg(

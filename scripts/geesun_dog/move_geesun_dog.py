@@ -8,7 +8,9 @@ in a trot-like gait (diagonal legs in phase).
 .. code-block:: bash
 
     # Usage (inside conda env with Isaac Lab installed)
-    python scripts/geesun_dog/move_geesun_dog.py --num_steps 1500
+    conda run -n env_isaaclab_sim51  python scripts/geesun_dog/move_geesun_dog.py --num_steps 1500 --calf_base -1.1  --calf_amp_deg 40   --variant dog1
+
+        conda run -n env_isaaclab_sim51  python scripts/geesun_dog/move_geesun_dog.py --num_steps 1500 --calf_base -1.1  --calf_amp_deg 40  --variant lingsi_d30w  --wheel_speed 10
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -38,6 +40,7 @@ parser.add_argument("--root_z", type=float, default=1.0, help="Initial root heig
 parser.add_argument("--no_pin_root", action="store_true", help="Do not re-write the root state every step (let gravity/dynamics act)")
 parser.add_argument("--rear_thigh", type=float, default=1.0, help="Standing-pose base angle for rear thigh joints (rad); 1.0 = mirrored stance matching GEESUN_DOG_CFG, -1.0 = legacy sitting stance (ablation)")
 parser.add_argument("--calf_base", type=float, default=-1.4, help="Standing-pose base angle for all calf joints (rad); more negative flattens the foot plate under the knee")
+parser.add_argument("--calf_amp_deg", type=float, default=0.0, help="Oscillation amplitude (deg) for calf joints; 0 = follow --amp_deg. dog921 calf limit is [-1.885, 0], so at --calf_base -1.4 the max symmetric amplitude is only ~27.8 deg; use e.g. --calf_base -1.1 --calf_amp_deg 40 for a visibly larger calf swing (range [-1.798, -0.402], no limit contact)")
 parser.add_argument("--settle_steps", type=int, default=100, help="In --no_pin_root mode: hold the root at --root_z for this many steps (lets the PD settle into the stance) before releasing it")
 parser.add_argument("--no_self_collision", action="store_true", help="Disable articulation self-collisions (the degenerate dog921 meshes can pinch the legs)")
 parser.add_argument("--stiffness", type=float, default=0.0, help="Override the actuator PD stiffness (0 = keep the cfg value)")
@@ -172,8 +175,9 @@ def main():
         "joint_hr_calf": args_cli.calf_base,
         "joint_hl_calf": args_cli.calf_base,
     }
-    # hip swing amplitude (smaller than thigh/calf)
-    amp_map = {name: amp * 0.5 if name.endswith("_hip") else amp for name in base}
+    # hip swing amplitude (smaller than thigh/calf); calf amplitude can be overridden with --calf_amp_deg
+    calf_amp = math.radians(args_cli.calf_amp_deg) if args_cli.calf_amp_deg > 0 else amp
+    amp_map = {name: amp * 0.5 if name.endswith("_hip") else (calf_amp if name.endswith("_calf") else amp) for name in base}
     # phases: diagonal legs (fr & hl), (fl & hr) move together; the other pair opposite
     phase_map = {
         "joint_fr_hip": 0.0,
@@ -204,6 +208,10 @@ def main():
 
     actions = robot.data.default_joint_pos.clone()  # (num_envs, num_joints), standing pose
     default_root = robot.data.default_root_state.clone()
+    # NOTE: z-down variants (e.g. lingsi_d30w, whose URDF header reads "x=front, y=left, z=down")
+    # are already flipped upright by GEESUN_DOG_CFG.init_state.rot (180 deg about x, wheels below the
+    # base), so no extra rotation belongs here. The model's native left/right ends up mirrored by that
+    # flip (the fl leg renders on the right); the diagonal trot phase structure is unaffected.
     # raise the base well above the ground (leg reach is ~0.7 m) so the swinging legs
     # do not hit the ground and jam the joints
     default_root[0, 2] = args_cli.root_z

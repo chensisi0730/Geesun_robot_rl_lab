@@ -13,7 +13,8 @@
    当最新 run 目录出现晚于停止时刻的 tfevents 写入（人工已重启）时标记自动清除，恢复正常崩溃自愈。
    防御性保护：只杀匹配到的进程组，pgid≤1 与监控自身进程组永不触碰；
 3. **TensorBoard 快照**：课程、速度误差、reward、终止率、value loss、学习率、噪声和 FPS 最近 200 迭代；
-4. **异常标志**：进程死亡、overflow、time_out <0.85、bad_orientation >2%、LR 长期在下限、地形提升时 reward 下跌或误差上升，以及**价值函数发散保护**：最近 200 迭代 `Loss/value_function` 中位数 > 100 时判定为发散，交给 autotune 将 PPO 学习率减半（下限 `2e-4`），随后 fresh 重训，避免续训已经发散的 checkpoint。
+4. **异常标志**：进程死亡、overflow、time_out <0.85、bad_orientation >2%、LR 长期在下限、地形提升时 reward 下跌或误差上升，以及**价值函数发散保护**：最近 200 迭代 `Loss/value_function` 中位数 > 100 时判定为发散，交给 autotune 将 PPO 学习率减半（下限 `1e-4`），随后 fresh 重训，避免续训已经发散的 checkpoint。
+   **进程死亡 + 持续发散时绝不 auto-resume**（checkpoint 已中毒）：改为调用 `autotune --force --diverged` 真正执行"降学习率 + fresh 重训"，杜绝"发散→猝死→resume 坏权重→再发散"循环；只有正常崩溃（无发散）才从 checkpoint 恢复。
 5. **瞬态恶化容忍**（`terrain_levels`、`Loss/value_function` 等短时下降但会自行恢复的情形）：
    - **单次不动作**：value loss 尖峰、terrain_levels 下降单次检查只报 `WARN ... tolerated`，须在下一次检查（6 小时后）**复现**才升级为 CRITICAL/动作；自行恢复的恶化永远不会中断训练；
    - **同 run 确认**：价值函数"持续发散"的确认要求两次检查属于同一个 run，fresh 重训后需重新观察；

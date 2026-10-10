@@ -63,7 +63,7 @@ AUTO_TUNE = True  # master switch (the autotuner also honours outputs/autotune/D
 
 PY = sys.executable
 TASK = "Unitree-Go2-Velocity"
-NUM_ENVS = 22000
+NUM_ENVS = 18000  # aligned with the manually launched runs since 2026-09-24
 LOG_GLOB = "/tmp/train_go2_v*.log"
 TRAIN_PATTERN = r"train\.py.*Unitree-Go2-Velocity"
 LAST_N = 200  # iterations considered for the snapshot
@@ -182,6 +182,11 @@ def overflow_new(state: dict) -> int:
 
 
 def try_auto_resume(state: dict, run_dir: Path | None) -> str:
+    if train_pids():
+        # Race guard: a training process appeared between the alive check and now (e.g. a
+        # manual launch). Never start a second IsaacSim instance - two instances fight over
+        # the GPU and the kit key-value DB and kill each other.
+        return "another training process appeared - not launching a second one"
     last = state.get("auto_resume_at", 0.0)
     if time.time() - last < RESUME_COOLDOWN_S:
         return "cooldown active (crash-loop guard) - manual restart needed"
@@ -387,6 +392,24 @@ def main() -> None:
             actions.append(
                 f"auto-resume SUPPRESSED (stop marker: {state['stop_marker'].get('reason', '?')}) - manual restart needed"
             )
+        elif value_diverged:
+            # A run whose value function diverged must NEVER be auto-resumed: its checkpoints
+            # are poisoned. Fulfil the "delegated to autotune" promise for real: halve the LR
+            # and fresh-restart instead of quietly reviving the bad weights (which used to
+            # loop: diverge -> die -> resume bad checkpoint -> diverge again).
+            actions.append(
+                "process dead + sustained value divergence -> fresh restart via autotune "
+                "(poisoned checkpoint NOT resumed)"
+            )
+            try:
+                cmd = [PY, str(AUTOTUNE_SCRIPT), "--run-dir", str(run_dir), "--force", "--diverged"]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=900, cwd=str(REPO))
+                out = (r.stdout or "").strip().splitlines()
+                actions.append("autotune: " + (out[-1] if out else f"exit {r.returncode}"))
+                if r.returncode != 0 and r.stderr:
+                    actions.append("autotune stderr: " + r.stderr.strip().splitlines()[-1][:200])
+            except Exception as e:
+                actions.append(f"autotune divergence-restart failed: {e!r}")
         else:
             actions.append("process dead -> " + try_auto_resume(state, run_dir))
 

@@ -272,10 +272,10 @@ class RewardsCfg:
 
     # -- task
     track_lin_vel_xy = RewTerm(
-        func=mdp.track_lin_vel_xy_exp, weight=1.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
+        func=mdp.track_lin_vel_xy_exp, weight=2.00, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
     track_ang_vel_z = RewTerm(
-        func=mdp.track_ang_vel_z_exp, weight=1.50, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
+        func=mdp.track_ang_vel_z_exp, weight=1.75, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
 
     # -- base
@@ -289,7 +289,7 @@ class RewardsCfg:
     energy = RewTerm(func=mdp.energy, weight=-2e-5)
 
     # -- robot
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-3.50)
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-4.50)
 
     joint_pos = RewTerm(
         func=mdp.joint_position_penalty,

@@ -741,6 +741,48 @@ GEESUN_DOG_DIR = next((d for d in _GEESEN_DOG_CANDIDATES if os.path.isdir(d)), _
 # (scripts/geesun_dog/move_geesun_dog.py --variant does this).
 GEESUN_DOG_VARIANT = os.environ.get("GEESUN_DOG_VARIANT", "dog1")
 
+# Per-variant asset traits, keyed by the directory name under <GEESUN_DOG_DIR>/geesun-dog/.
+# Tasks read these to stay correct for both the footed dog1 and the wheel-legged lingsi_d30w.
+GEESUN_DOG_VARIANT_SPECS: dict[str, dict] = {
+    "dog1": {
+        # foot plates at the calf tips; all 12 joints are position-controlled
+        "z_down": False,
+        "wheel_leg": False,
+        # base origin height with the feet resting on the ground (measured: 0.166 m of stance)
+        "root_z": 0.17,
+        # links that touch the ground (used as "feet" by the locomotion rewards)
+        "foot_body": ".*_calf",
+        "leg_joints": ["joint_(fr|fl|hr|hl)_(hip|thigh|calf)"],
+    },
+    "lingsi_d30w": {
+        # the STEP export is a z-DOWN frame (URDF header: "x=front, y=left, z=down"), so Isaac's
+        # z-up world renders the robot inverted unless the root is rotated 180 deg about x.
+        "z_down": True,
+        # continuous wheel joints at the calf tips instead of foot plates
+        "wheel_leg": True,
+        # base origin height with the wheels resting on the ground (measured: wheel bottom 0.237 m)
+        "root_z": 0.24,
+        "foot_body": ".*_wheel",
+        "leg_joints": ["joint_(fr|fl|hr|hl)_(hip|thigh|calf)"],
+    },
+}
+_GEESUN_DOG_DEFAULT_SPEC = GEESUN_DOG_VARIANT_SPECS["dog1"]
+if GEESUN_DOG_VARIANT not in GEESUN_DOG_VARIANT_SPECS:
+    print(
+        f"[WARN] unknown GEESUN_DOG_VARIANT '{GEESUN_DOG_VARIANT}'; "
+        f"falling back to the dog1 traits. Known variants: {sorted(GEESUN_DOG_VARIANT_SPECS)}"
+    )
+GEESUN_DOG_VARIANT_SPEC: dict = GEESUN_DOG_VARIANT_SPECS.get(GEESUN_DOG_VARIANT, _GEESUN_DOG_DEFAULT_SPEC)
+
+# True when the active variant is wheel-legged (velocity-servo wheels instead of feet)
+GEESUN_DOG_WHEEL_LEG: bool = bool(GEESUN_DOG_VARIANT_SPEC["wheel_leg"])
+# Wheel joints of the wheel-legged variants, empty for footed ones
+GEESUN_DOG_WHEEL_JOINT_NAMES: list[str] = ["joint_(fr|fl|hr|hl)_wheel"] if GEESUN_DOG_WHEEL_LEG else []
+# 180 deg about x as (w, x, y, z): z-down -> z-up while keeping x = forward. y gets mirrored, which
+# only swaps the model's own left/right labels (the fl leg renders on the right) - harmless for a
+# symmetric gait, and unavoidable since any proper rotation that flips z also flips one horizontal axis.
+GEESUN_DOG_ROOT_ROT_Z_DOWN: tuple[float, float, float, float] = (0.0, 1.0, 0.0, 0.0)
+
 
 def _geesun_dog_temp_paths() -> tuple:
     """Return (temp_pkg_dir, temp_urdf_path, usd_path) for the active variant."""
@@ -990,6 +1032,44 @@ def ensure_geesun_dog_usd() -> str:
     return converter.usd_path
 
 
+# The leg joints are position-controlled; on wheel-legged variants the continuous wheel joints get
+# their own group driven as a pure velocity servo (stiffness=0 -> tau = damping * (v_des - v)),
+# because a position drive on a continuous wheel joint would fight free rolling.
+_GEESUN_DOG_ACTUATORS = {
+    "GeEsunDog": unitree_actuators.UnitreeActuatorCfg_GeesunDog(
+        joint_names_expr=list(GEESUN_DOG_VARIANT_SPEC["leg_joints"]),
+        stiffness=30.0,
+        damping=1.0,
+        friction=0.02,
+    ),
+}
+if GEESUN_DOG_WHEEL_LEG:
+    # friction=0 so the GeesunDog friction model does not brake free rolling
+    _GEESUN_DOG_ACTUATORS["GeEsunDogWheels"] = unitree_actuators.UnitreeActuatorCfg_GeesunDog(
+        joint_names_expr=list(GEESUN_DOG_WHEEL_JOINT_NAMES),
+        stiffness=0.0,
+        damping=5.0,
+        friction=0.0,
+    )
+
+
+# fmt: off
+_GEESUN_DOG_SDK_JOINTS = [
+    "joint_fr_hip", "joint_fr_thigh", "joint_fr_calf",
+    "joint_fl_hip", "joint_fl_thigh", "joint_fl_calf",
+    "joint_hr_hip", "joint_hr_thigh", "joint_hr_calf",
+    "joint_hl_hip", "joint_hl_thigh", "joint_hl_calf",
+]
+# fmt: on
+if GEESUN_DOG_WHEEL_LEG:
+    _GEESUN_DOG_SDK_JOINTS += [
+        "joint_fr_wheel",
+        "joint_fl_wheel",
+        "joint_hr_wheel",
+        "joint_hl_wheel",
+    ]
+
+
 GEESUN_DOG_CFG = UnitreeArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=GEESUN_DOG_USD,
@@ -1010,9 +1090,13 @@ GEESUN_DOG_CFG = UnitreeArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        # Measured standing height: in the standing pose the foot-plate bottom is 0.166 m
-        # below the base origin (see README, Geesun 站立姿态验证); 0.17 leaves ~4 mm clearance.
-        pos=(0.0, 0.0, 0.17),
+        # Measured standing height per variant (see GEESUN_DOG_VARIANT_SPECS["root_z"]): for dog1 the
+        # foot-plate bottom is 0.166 m below the base origin (see README, Geesun 站立姿态验证), so 0.17
+        # leaves ~4 mm clearance; for lingsi_d30w the wheel bottom is 0.237 m below the base, so 0.24.
+        pos=(0.0, 0.0, GEESUN_DOG_VARIANT_SPEC["root_z"]),
+        # z-down exports (e.g. lingsi_d30w) are flipped 180 deg about x so the wheels end up below
+        # the base instead of above it
+        rot=GEESUN_DOG_ROOT_ROT_Z_DOWN if GEESUN_DOG_VARIANT_SPEC["z_down"] else (1.0, 0.0, 0.0, 0.0),
         joint_pos={
             # front legs (fr/fl): thigh forward (+), calf backward (-)
             "joint_fr_thigh": 1.0,
@@ -1033,20 +1117,6 @@ GEESUN_DOG_CFG = UnitreeArticulationCfg(
         },
         joint_vel={"joint_.*": 0.0},
     ),
-    actuators={
-        "GeEsunDog": unitree_actuators.UnitreeActuatorCfg_GeesunDog(
-            joint_names_expr=["joint_.*"],
-            stiffness=30.0,
-            damping=1.0,
-            friction=0.02,
-        ),
-    },
-    # fmt: off
-    joint_sdk_names=[
-        "joint_fr_hip", "joint_fr_thigh", "joint_fr_calf",
-        "joint_fl_hip", "joint_fl_thigh", "joint_fl_calf",
-        "joint_hr_hip", "joint_hr_thigh", "joint_hr_calf",
-        "joint_hl_hip", "joint_hl_thigh", "joint_hl_calf",
-    ],
-    # fmt: on
+    actuators=_GEESUN_DOG_ACTUATORS,
+    joint_sdk_names=_GEESUN_DOG_SDK_JOINTS,
 )

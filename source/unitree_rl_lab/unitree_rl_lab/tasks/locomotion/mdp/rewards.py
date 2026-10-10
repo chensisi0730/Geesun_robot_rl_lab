@@ -67,12 +67,18 @@ def upward(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("r
 def joint_position_penalty(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, stand_still_scale: float, velocity_threshold: float
 ) -> torch.Tensor:
-    """Penalize joint position error from default on the articulation."""
+    """Penalize joint position error from default on the articulation.
+
+    .. note::
+        Only the joints configured in :attr:`asset_cfg.joint_ids` contribute to the term.
+    """
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
     cmd = torch.linalg.norm(env.command_manager.get_command("base_velocity"), dim=1)
     body_vel = torch.linalg.norm(asset.data.root_lin_vel_b[:, :2], dim=1)
-    reward = torch.linalg.norm((asset.data.joint_pos - asset.data.default_joint_pos), dim=1)
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    default_joint_pos = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    reward = torch.linalg.norm(joint_pos - default_joint_pos, dim=1)
     return torch.where(torch.logical_or(cmd > 0.0, body_vel > velocity_threshold), reward, stand_still_scale * reward)
 
 

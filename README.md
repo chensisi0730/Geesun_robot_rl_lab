@@ -339,6 +339,7 @@ grep -c 'Patch buffer overflow' /tmp/train_go2.log
 | `--no_pin_root` | 关 | 不每步重写根状态（让重力/接触动力学生效）；配合 `--root_z 0.17` 做站立测试 |
 | `--rear_thigh` | 1.0 | 站立姿态的后大腿基准角（rad）；`1.0` = 与 `GEESUN_DOG_CFG` 一致的镜像站姿，`-1.0` = 旧"坐"姿态（消融对照） |
 | `--calf_base` | -1.4 | 站立姿态的全部 calf 基准角（rad） |
+| `--calf_amp_deg` | 0（= `--amp_deg`） | calf 专用摆动幅度（度）；calf 真实限位 `[-1.885, 0]`，base -1.4 时最大对称幅度仅 ~27.8°，放大 calf 摆动需配合 `--calf_base -1.1`（如 `--calf_base -1.1 --calf_amp_deg 40`，峰-峰 80°，范围 `[-1.798, -0.402]` 不触限位） |
 | `--settle_steps` | 100 | `--no_pin_root` 模式下先在 `--root_z` 钉住根多少步（让 PD 收敛到站姿）再释放 |
 | `--no_self_collision` | 关 | 关闭自碰撞（退化网格细条可能卡腿，消融用） |
 | `--stiffness` / `--damping` | 0（=CFG 值） | 运行时覆盖 PD 增益（CFG 默认 k=30, b=1） |
@@ -403,6 +404,22 @@ python scripts/geesun_dog/move_geesun_dog.py --no_pin_root --root_z 0.17 --num_s
 
 **结论：** 资产链、12-DOF 控制、地面接触与步态振荡均正常；地面运动的瓶颈仍是纯 PD 的支撑能力（k=30, b=1），与 9/23 站立姿态验证一致——改进优先级首选 RL 策略训练（`Unitree-GeesunDog-Velocity`），不依赖纯 PD 静立。
 
+**GUI 渲染演示（10/8，calf 幅度放大）：**
+
+去掉 `--headless` 即可在图形界面观察（Isaac Sim 窗口，相机自动跟随机器人；Go2 训练占用同一 GPU 时是慢动作效果）：
+
+```bash
+# A：空中踏步（calf 幅度放大：--calf_base -1.1 --calf_amp_deg 40）
+python scripts/geesun_dog/move_geesun_dog.py --num_steps 400 --root_z 1.0 --calf_base -1.1 --calf_amp_deg 40
+# C：地面原地踏步 + 塌缩（同一 calf 参数）
+python scripts/geesun_dog/move_geesun_dog.py --no_pin_root --root_z 0.17 --num_steps 400 --settle_steps 100 \
+    --gait_freq 1.5 --amp_deg 25 --calf_base -1.1 --calf_amp_deg 40
+```
+
+> **calf 幅度放大的原因（10/8）：** dog921 真实 calf 限位为 `[-1.885, 0]`，旧 base `-1.4` 时最大对称幅度只有 **27.8°**（下限侧余量 0.485 rad），25° 摆动已接近限位；且 calf 力臂短（只带动足板），视觉上摆动明显小于大腿。为此新增 `--calf_amp_deg`（默认 0 = 跟随 `--amp_deg`，原行为不变，方便消融对照），并把 `--calf_base` 移到 `-1.1`（限位中心方向）+ 40° 幅度：calf 峰-峰 80°（原 50°），范围 `[-1.798, -0.402]` 不触限位。空中演示（A）根钉在 1 m，站姿变化无影响；地面演示（C）站姿改变（膝更伸），塌缩轨迹可能与原 C 不同。
+>
+> 渲染日志：`outputs/geesun_demo/render_a_air_trot_gui_bigcalf.log`、`outputs/geesun_demo/render_c_ground_trot_gui_bigcalf.log`（9/24 首次渲染日志 `render_a_air_trot_gui.log` / `render_c_ground_trot_gui.log` 使用原参数 25°/base -1.4）。
+
 **任务训练（可选）：**
 
 ```bash
@@ -419,6 +436,9 @@ tensorboard --logdir logs/rsl_rl/
 ```bash
 python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --headless --num_steps 400
 # 轮关节按 --wheel_speed 匀速自转（默认 10 rad/s，0 = 锁死只动腿）
+# GUI 渲染（calf 幅度放大 + 一直运行直到关窗）：
+python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --num_steps 0 --root_z 1.0 \
+    --calf_base -1.1 --calf_amp_deg 40 --wheel_speed 10
 ```
 
 注意：关节 origin 由 STEP 装配树自动解析，**尚待实测标定**；`base.stl` 已抽稀为 23.7 万面 / 12 MB
@@ -426,6 +446,13 @@ python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --headless --
 原始 `D30W轮足外发.STEP`（204 MB）保留在变体目录但不入 git（见 .gitignore）。
 重新转换的完整流程（工具选择、STL 导出脚本、关节参数、URDF 模板、代码契约与验证步骤）
 见 [doc/step_to_urdf.md](doc/step_to_urdf.md)。
+
+> **注意（10/8，上下颠倒修复）：** D30W 的 URDF 是 **z 朝下坐标系**导出的（URDF 头注释
+> `x=前(+), y=左(+), z=下(+)`），而 Isaac Sim 为 z-up，直接加载时整机上下颠倒（轮子在机身
+> 上方；FK 验证：站姿下 wheel 中心在 base 原点上方 +0.206 m）。`move_geesun_dog.py` 现已对
+> `--variant lingsi_d30w` 把 root 绕 x 轴翻转 180°（quaternion (0,1,0,0)）使轮子朝下；
+> 副作用是模型原生左右镜像（fl 腿显示在右侧），不影响 trot 对角相位结构。**训练/`play.py`
+> 等其它入口在改用 z-up 的 URDF 重新转换（`doc/step_to_urdf.md`）之前，仍会显示为倒置。**
 
 ## 部署
 

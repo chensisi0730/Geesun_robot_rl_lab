@@ -64,7 +64,7 @@ DISABLE_FILE = AUTODIR / "DISABLED"
 
 PY = sys.executable
 TASK = "Unitree-Go2-Velocity"
-NUM_ENVS = 22000
+NUM_ENVS = 18000  # aligned with the manually launched runs since 2026-09-24
 TRAIN_PATTERN = r"train\.py.*Unitree-Go2-Velocity"
 ISAACLAB_PATH = "/home/css/work/unitree/rl/unitree_Robert/isaaclab/IsaacLab"
 PROXY = "http://127.0.0.1:7897"
@@ -95,7 +95,7 @@ KNOBS: dict[str, dict] = {
     ),
     "learning_rate": dict(
         file=PPO_FILE, scope=PPO_SCOPE, pattern=r"^\s*(learning_rate=)(?P<v>[0-9.eE+-]+)",
-        kind=float, op="mul", arg=0.5, lo=2.0e-4, hi=2.0e-3, fmt="{:.1e}", restart="fresh",
+        kind=float, op="mul", arg=0.5, lo=1.0e-4, hi=2.0e-3, fmt="{:.1e}", restart="fresh",
         desc="PPO learning rate (reduced after value-function divergence)",
     ),
     "desired_kl": dict(
@@ -383,8 +383,14 @@ def _used(state: dict, knob: str) -> int:
 
 
 def decide(f: dict, state: dict):
+    # Budgets were raised for the two knobs that carry degradation responses after
+    # 2026-09-24..09-30: their budgets ran out and the auto-tuner silently lost the ability to
+    # act on bad_orientation / err_yaw degradation (ledger gap 09-24 -> 09-29).
+    blocked: list[str] = []
+
     def pick(knob: str, reason: str, budget: int):
         if _used(state, knob) >= budget:
+            blocked.append(f"{knob} {_used(state, knob)}/{budget}")
             return None
         old = read_knob(knob)
         new = _new_value(KNOBS[knob], old)
@@ -404,17 +410,17 @@ def decide(f: dict, state: dict):
          f"value function diverged, sustained (last {VALUE_LOSS_WINDOW} median={f['value_loss_med']:.3g}, "
          f"prev window median={'%.3g' % f['value_loss_prev_med'] if f['value_loss_prev_med'] is not None else 'n/a'})", 3, False),
         (f["degrading"] and "bad_orientation" in degradation, "flat_orientation_l2",
-         f"curve degradation ({degradation})", 2, True),
+         f"curve degradation ({degradation})", 4, True),
         (f["degrading"] and "err_yaw" in degradation, "track_ang_vel_z",
-         f"curve degradation ({degradation})", 2, True),
+         f"curve degradation ({degradation})", 3, True),
         (f["degrading"] and "err_xy" in degradation, "track_lin_vel_xy",
          f"curve degradation ({degradation})", 2, True),
         (learning_stalled and f["exploration_collapsed"], "init_noise_std",
          "plateaued with collapsed exploration (mean_noise_std<0.2)", 1, False),
         (learning_stalled and f["lr_pinned_frac"] > 0.4, "desired_kl",
          "plateaued with adaptive LR pinned at its floor", 2, False),
-        (f["falls_rising"], "flat_orientation_l2", "fall rate rising", 2, True),
-        (f["yaw_stuck"], "track_ang_vel_z", "yaw gate stuck + poor yaw tracking", 2, False),
+        (f["falls_rising"], "flat_orientation_l2", "fall rate rising", 4, True),
+        (f["yaw_stuck"], "track_ang_vel_z", "yaw gate stuck + poor yaw tracking", 3, False),
         (f["lin_stuck"], "track_lin_vel_xy", "lin gate stuck + poor xy tracking", 2, False),
         (f["plateau"] and f["yaw_stuck"], "success_yaw", "yaw gate stuck -> relax yaw threshold", 2, False),
         (f["plateau"] and f["lin_stuck"], "success_xy", "lin gate stuck -> relax xy threshold", 2, False),
@@ -426,8 +432,8 @@ def decide(f: dict, state: dict):
             act = pick(knob, reason, budget)
             if act:
                 act["needs_confirm"] = needs_confirm
-                return act
-    return None
+                return act, blocked
+    return None, blocked
 
 
 # ---------------------------------------------------------------------------
@@ -620,6 +626,12 @@ def main() -> int:
     ap.add_argument("--run-dir", type=str, default=None)
     ap.add_argument("--dry-run", action="store_true", help="diagnose + print the plan, change nothing")
     ap.add_argument("--force", action="store_true", help="ignore cooldowns / start-iteration guard")
+    ap.add_argument(
+        "--diverged", action="store_true",
+        help="force the value-divergence path (LR halving + fresh restart) even if the "
+             "in-run two-window criterion is not met; used by the monitor when the training "
+             "process died during a sustained divergence so a poisoned checkpoint is never resumed",
+    )
     ap.add_argument("--rollback", action="store_true", help="restore the newest backup and relaunch")
     ap.add_argument("--list", action="store_true", help="print current knob values and exit")
     args = ap.parse_args()
@@ -645,6 +657,12 @@ def main() -> int:
         return 0
     tb = tbc.load_scalars(run_dir)
     f = diagnose(tb)
+    if args.diverged:
+        # The monitor only passes --diverged when its own cross-check criterion already saw a
+        # sustained divergence; honour that decision and walk the LR-reduction + fresh-restart
+        # path even if this run's data window is shorter than the in-run criterion needs.
+        f["value_diverged"] = True
+        f["degradation_reasons"].insert(0, f"value_loss median {f['value_loss_med']:.3g} (forced by --diverged)")
     log(f"run={run_dir.name} step={f['step']} reward={f['reward']} "
         f"err_xy={f['err_xy']} err_yaw={f['err_yaw']} noise_std={f['noise_std']} "
         f"x_max={f['x_max']} z_max={f['z_max']} lr_pin={f['lr_pinned_frac']}")
@@ -663,9 +681,18 @@ def main() -> int:
             log(guard)
             return 0
 
-    action = decide(f, state)
+    action, blocked = decide(f, state)
     if action is None:
-        log("no intervention needed")
+        msg = "no intervention needed"
+        if blocked:
+            # Do NOT stay silent about a degradation we cannot act on: surface it so the
+            # report/monitor shows "budget exhausted" instead of a misleading "healthy".
+            msg += (
+                " [BUDGET EXHAUSTED: "
+                + ", ".join(sorted(set(blocked)))
+                + " - wanted to act on this degradation but no knob budget left; manual decision needed]"
+            )
+        log(msg)
         state.pop("pending_confirm", None)  # the degradation did not reproduce -> forgive
         if not args.dry_run:
             state["last_observation"] = observation(f, run_dir.name)

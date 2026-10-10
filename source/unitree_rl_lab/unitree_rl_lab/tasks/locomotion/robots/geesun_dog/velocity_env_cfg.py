@@ -8,6 +8,7 @@ Adapted from the Go2 task. Main differences:
 """
 
 import math
+import os
 
 import isaaclab.sim as sim_utils
 import isaaclab.terrains as terrain_gen
@@ -28,8 +29,19 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from unitree_rl_lab.assets.robots.unitree import GEESUN_DOG_CFG as ROBOT_CFG
+from unitree_rl_lab.assets.robots.unitree import GEESUN_DOG_VARIANT_SPEC
+from unitree_rl_lab.assets.robots.unitree import GEESUN_DOG_WHEEL_JOINT_NAMES
+from unitree_rl_lab.assets.robots.unitree import GEESUN_DOG_WHEEL_LEG
 from unitree_rl_lab.assets.robots.unitree import ensure_geesun_dog_usd
 from unitree_rl_lab.tasks.locomotion import mdp
+
+# Links that touch the ground. dog1 has foot plates at the calf tips; the wheel-legged lingsi_d30w
+# rolls on its wheels, so the wheel links are the feet and the calves must stay clear of the ground.
+FOOT_BODY_NAMES = GEESUN_DOG_VARIANT_SPEC["foot_body"]
+# The position-controlled leg joints. On wheel-legged variants the wheel joints are velocity-servo
+# driven and excluded, otherwise the joint-space penalties (velocity / acceleration / torque /
+# position deviation) would directly fight free rolling.
+LEG_JOINT_NAMES = list(GEESUN_DOG_VARIANT_SPEC["leg_joints"])
 
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
@@ -189,8 +201,30 @@ class ActionsCfg:
     """Action specifications for the MDP."""
 
     JointPositionAction = mdp.JointPositionActionCfg(
-        asset_name="robot", joint_names=[".*"], scale=0.25, use_default_offset=True, clip={".*": (-100.0, 100.0)}
+        asset_name="robot",
+        joint_names=LEG_JOINT_NAMES,
+        scale=0.25,
+        use_default_offset=True,
+        clip={".*": (-100.0, 100.0)},
     )
+
+
+@configclass
+class WheelLegActionsCfg(ActionsCfg):
+    """Adds the wheel velocity servo on top of the leg position control."""
+
+    WheelVelocityAction = mdp.JointVelocityActionCfg(
+        asset_name="robot",
+        joint_names=GEESUN_DOG_WHEEL_JOINT_NAMES,
+        # 0.25 rad/s per unit action would crawl; 20 rad/s per unit covers the 25 rad/s URDF limit
+        scale=20.0,
+        use_default_offset=True,
+        clip={".*": (-25.0, 25.0)},
+    )
+
+
+if GEESUN_DOG_WHEEL_LEG:
+    ActionsCfg = WheelLegActionsCfg
 
 
 @configclass
@@ -262,11 +296,29 @@ class RewardsCfg:
     # -- base
     base_linear_velocity = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     base_angular_velocity = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
-    joint_vel = RewTerm(func=mdp.joint_vel_l2, weight=-0.001)
-    joint_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
-    joint_torques = RewTerm(func=mdp.joint_torques_l2, weight=-2e-4)
+    # joint-space penalties are restricted to the position-controlled leg joints: on the wheel-legged
+    # variant the wheels must be free to spin fast, so penalising their speed / acceleration /
+    # torque / position offset would make rolling impossible
+    joint_vel = RewTerm(
+        func=mdp.joint_vel_l2, weight=-0.001, params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)}
+    )
+    joint_acc = RewTerm(
+        func=mdp.joint_acc_l2,
+        weight=-2.5e-7,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
+    )
+    joint_torques = RewTerm(
+        func=mdp.joint_torques_l2,
+        weight=-2e-4,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
+    )
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.1)
-    dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-10.0)
+    dof_pos_limits = RewTerm(
+        func=mdp.joint_pos_limits,
+        weight=-10.0,
+        # wheel joints are continuous (no limits) and are excluded from the soft-limit penalty
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
+    )
     energy = RewTerm(func=mdp.energy, weight=-2e-5)
 
     # -- robot
@@ -276,18 +328,18 @@ class RewardsCfg:
         func=mdp.joint_position_penalty,
         weight=-0.7,
         params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES),
             "stand_still_scale": 5.0,
             "velocity_threshold": 0.3,
         },
     )
 
-    # -- feet (the dog URDF has no foot links, the calf tips are the feet)
+    # -- feet (the dog URDF has no foot links: dog1 uses the calf tips, lingsi_d30w the wheels)
     feet_air_time = RewTerm(
         func=mdp.feet_air_time,
         weight=0.1,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_calf"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_BODY_NAMES),
             "command_name": "base_velocity",
             "threshold": 0.5,
         },
@@ -295,14 +347,14 @@ class RewardsCfg:
     air_time_variance = RewTerm(
         func=mdp.air_time_variance_penalty,
         weight=-1.0,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_calf")},
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_BODY_NAMES)},
     )
     feet_slide = RewTerm(
         func=mdp.feet_slide,
         weight=-0.1,
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_calf"),
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_calf"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_BODY_NAMES),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_BODY_NAMES),
         },
     )
     # feet_contact_forces = RewTerm(
@@ -310,17 +362,21 @@ class RewardsCfg:
     #     weight=-0.02,
     #     params={
     #         "threshold": 100.0,
-    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_calf"),
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_BODY_NAMES),
     #     },
     # )
 
     # -- other
+    # on the wheel-legged variant the calf links sit right above the wheels and must not scrape the
+    # ground, so they join the hips and thighs as undesired-contact bodies
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         weight=-1,
         params={
             "threshold": 1,
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_hip", ".*_thigh"]),
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=[".*_hip", ".*_thigh"] + ([".*_calf"] if GEESUN_DOG_WHEEL_LEG else [])
+            ),
         },
     )
 
@@ -365,6 +421,11 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         """Post initialization."""
         # make sure the converted USD asset exists before the scene spawns the robot
         ensure_geesun_dog_usd()
+        print(
+            f"Geesun variant: {os.environ.get('GEESUN_DOG_VARIANT', 'dog1')} "
+            f"(wheel_leg={GEESUN_DOG_WHEEL_LEG}, feet='{FOOT_BODY_NAMES}')",
+            flush=True,
+        )
 
         # general settings
         self.decimation = 4
