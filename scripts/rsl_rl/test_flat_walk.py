@@ -12,8 +12,8 @@ The terrain is selected with ``--terrain``:
 
 - ``flat`` (default): force a pure flat terrain.
 - ``play``: no override, use the task's play environment terrain as configured.
-- ``random_rough`` / ``boxes`` / ``stairs``: isolate one trained terrain type.
-- ``complex``: force a mixed rough terrain (stairs / boxes / rough),
+- ``random_rough`` / ``stairs``: isolate one trained terrain type.
+- ``complex``: force a mixed rough terrain (stairs / rough),
   with robots spawned on all difficulty rows (worst case for torque stats).
 
 Usage:
@@ -44,11 +44,11 @@ parser.add_argument(
     "--terrain",
     type=str,
     default="flat",
-    choices=["flat", "play", "random_rough", "boxes", "stairs", "complex"],
+    choices=["flat", "play", "random_rough", "stairs", "complex"],
     help=(
         "Terrain for the test: 'flat' = forced pure flat terrain (default), "
         "'play' = use the task's play env terrain as configured, "
-        "'random_rough'/'boxes'/'stairs' = isolate one trained terrain type, "
+        "'random_rough'/'stairs' = isolate one trained terrain type, "
         "'complex' = forced mixed rough terrain (worst-case walking/torque stats)."
     ),
 )
@@ -117,9 +117,10 @@ COMPLEX_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
             proportion=0.2, noise_range=(0.01, 0.06), noise_step=0.01, border_width=0.25
         ),
-        "boxes": terrain_gen.MeshRandomGridTerrainCfg(
-            proportion=0.2, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
-        ),
+        # "boxes" (ablation 2026-10-12: removed with the training set):
+        # terrain_gen.MeshRandomGridTerrainCfg(
+        #     proportion=0.2, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
+        # ),
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
             proportion=0.2,
             step_height_range=(0.05, 0.23),
@@ -137,10 +138,6 @@ def single_terrain_cfg(mode: str) -> terrain_gen.TerrainGeneratorCfg:
     if mode == "random_rough":
         terrain = terrain_gen.HfRandomUniformTerrainCfg(
             proportion=1.0, noise_range=(0.01, 0.06), noise_step=0.01, border_width=0.25
-        )
-    elif mode == "boxes":
-        terrain = terrain_gen.MeshRandomGridTerrainCfg(
-            proportion=1.0, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
         )
     elif mode == "stairs":
         terrain = terrain_gen.MeshPyramidStairsTerrainCfg(
@@ -218,7 +215,7 @@ def main():
         env_cfg.scene.terrain.terrain_generator = COMPLEX_TERRAIN_CFG
         # Spawn each env on a random difficulty row (easiest -> hardest)
         env_cfg.scene.terrain.max_init_terrain_level = COMPLEX_TERRAIN_CFG.num_rows - 1
-    elif args_cli.terrain in {"random_rough", "boxes", "stairs"}:
+    elif args_cli.terrain in {"random_rough", "stairs"}:
         isolated_cfg = single_terrain_cfg(args_cli.terrain)
         env_cfg.scene.terrain.terrain_generator = isolated_cfg
         env_cfg.scene.terrain.max_init_terrain_level = isolated_cfg.num_rows - 1

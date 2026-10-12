@@ -1036,11 +1036,10 @@ def ensure_geesun_dog_usd() -> str:
 # their own group driven as a pure velocity servo (stiffness=0 -> tau = damping * (v_des - v)),
 # because a position drive on a continuous wheel joint would fight free rolling.
 _GEESUN_DOG_ACTUATORS = {
+    # PD gains come from the self-contained UnitreeActuatorCfg_GeesunDog class (isolated from
+    # GO2/other robots); only joint names are bound here.
     "GeEsunDog": unitree_actuators.UnitreeActuatorCfg_GeesunDog(
         joint_names_expr=list(GEESUN_DOG_VARIANT_SPEC["leg_joints"]),
-        stiffness=30.0,
-        damping=1.0,
-        friction=0.02,
     ),
 }
 if GEESUN_DOG_WHEEL_LEG:

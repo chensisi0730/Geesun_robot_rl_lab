@@ -71,6 +71,9 @@ nohup bash -c 'while true; do sleep 21600; \
   迭代且墙钟时间 ≥ 3 小时；迭代冷却按 run 独立计算，fresh run 的 step 归零不会被旧 run 卡住；
   全局上限 `MAX_ACTIONS=16`，每个旋钮有独立预算；`init_noise_std`/`entropy_coef`/`desired_kl`
   等"加压"规则还额外要求 **plateau 且课程未解锁到上限**，避免打扰已收敛的良好 run。
+  预算只约束 plateau/学习加压类规则；恶化类规则（价值函数发散、曲线恶化、跌倒率上升）
+  在预算耗尽后**仍然豁免生效**（2026-10-10 起），由旋钮 lo/hi 上下界、确认门和冷却兜底，
+  保证"曲线恶化 → 停止训练 → 改超参 → 重新训练"的闭环不会因预算耗尽而停摆。
 - **恶化判据**：使用最近 400 迭代前/后四分位数的中位数比较。单条噪声曲线不会触发重训；需
   reward 下降 ≥20% 且至少一项（xy/yaw 误差上升 ≥15%、time_out 下降 ≥10%、bad_orientation
   上升 ≥25%）同时恶化，或至少两项非 reward 指标同时恶化。触发后按主要恶化项每次只修改一个
@@ -156,7 +159,7 @@ python scripts/rsl_rl/play.py --headless --task Unitree-Go2-Velocity \
 ### 3.3 分地形覆盖度检查
 
 ```bash
-for terrain in flat random_rough boxes stairs complex; do
+for terrain in flat random_rough stairs complex; do
   python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity \
     --terrain "$terrain" --steps 1000 --checkpoint <checkpoint-path>
 done
@@ -187,14 +190,14 @@ done
 （proportion 归一化后决定列数）：
 
 ```
-            列 →   0-2          3-8            9-14           15-19
-                 ┌──────────┬───────────────┬───────────────┬──────────────┐
-  level 0 (最易) │          │               │               │              │
-  level 1        │   flat   │ random_rough  │     boxes     │ pyramid_     │
-  ...            │ (3 列)   │   (6 列)      │    (6 列)     │  stairs(5列) │
-  level 8        │  纯平面   │  随机起伏      │   随机方格块   │    金字塔阶梯   │
-  level 9 (最难) │          │  噪声 1–6 cm  │  块高 5–20 cm  │  台阶高5–23cm │
-                 └──────────┴───────────────┴───────────────┴──────────────┘
+            列 →   0-3          4-11             12-19
+                 ┌──────────┬────────────────┬────────────────┐
+  level 0 (最易) │          │                │                │
+  level 1        │   flat   │ random_rough   │   pyramid_     │
+  ...            │ (4 列)   │   (8 列)       │  stairs (8 列) │
+  level 8        │  纯平面   │   随机起伏       │   金字塔阶梯     │
+  level 9 (最难) │          │  噪声 1–6 cm   │   台阶高 5–23cm │
+                 └──────────┴────────────────┴────────────────┘
   难度：行 0 障碍≈0 → 行 9 障碍最大；障碍物尺寸随 difficulty 线性缩放
   每个 env 的当前行 = 它的 terrain_levels；max_init_terrain_level=2 →
   spawn/respawn 时在 level [0,2] 内随机取行
@@ -202,12 +205,12 @@ done
 
 | 子地形 | 列数 | 难度缩放（×difficulty） |
 |---|---|---|
-| flat | 3 | 无（所有行都是平面，作为保底/校准区） |
-| random_rough | 6 | 噪声高度 (0.01, 0.06) m |
-| boxes | 6 | 块高 (0.05, 0.2) m，网格宽 0.45 m |
-| pyramid_stairs | 5 | 台阶高 (0.05, 0.23) m，台阶宽 0.3 m |
+| flat | 4 | 无（所有行都是平面，作为保底/校准区） |
+| random_rough | 8 | 噪声高度 (0.01, 0.06) m |
+| pyramid_stairs | 8 | 台阶高 (0.05, 0.23) m，台阶宽 0.3 m |
 
-（`hf_pyramid_slope` / `pyramid_stairs_inv` 等类型当前被注释掉，见配置。）
+（`boxes` 已于 2026-10-12 消融移除（块高 (0.05, 0.2) m，网格宽 0.45 m，配置中注释保留可恢复）；
+`hf_pyramid_slope` / `pyramid_stairs_inv` 等类型当前被注释掉，见配置。）
 
 ### 4.2 terrain_levels：逐 env 的异步"舒适难度"随机游走（有升有降）
 

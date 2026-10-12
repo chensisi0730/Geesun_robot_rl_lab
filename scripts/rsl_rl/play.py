@@ -30,6 +30,13 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument(
+    "--camera_view",
+    type=str,
+    default="side",
+    choices=["rear", "side"],
+    help="Follow-camera style for videos: 'side' (default, lateral tracking shot) or 'rear' (behind the robot).",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -167,6 +174,28 @@ def main():
     obs = env.get_observations()
     if version("rsl-rl-lib").startswith("2.3."):
         obs, _ = env.get_observations()
+    def _follow_camera(distance: float = 2.2, height: float = 1.1):
+        """Follow camera for videos; style selected by --camera_view.
+
+        - "side" (default): lateral tracking shot - the camera rides next to the robot at a
+          fixed world-side offset and keeps looking at it (does not spin with its yaw).
+        - "rear": classic chase camera behind the robot, aligned with its yaw.
+        """
+        from isaacsim.core.utils import viewports as vp_utils
+
+        robot = env.unwrapped.scene["robot"]
+        pos = robot.data.root_pos_w[0].cpu()
+        if args_cli.camera_view == "rear":
+            quat = robot.data.root_quat_w[0].cpu()  # (w, x, y, z)
+            yaw = torch.atan2(2.0 * (quat[0] * quat[3] + quat[1] * quat[2]), 1.0 - 2.0 * (quat[2] ** 2 + quat[3] ** 2))
+            fx, fy = torch.cos(yaw), torch.sin(yaw)
+            eye = [float(pos[0] - distance * fx), float(pos[1] - distance * fy), float(pos[2] + height)]
+            target = [float(pos[0] + 0.5 * fx), float(pos[1] + 0.5 * fy), float(pos[2] + 0.1)]
+        else:  # side
+            eye = [float(pos[0]), float(pos[1] + distance), float(pos[2] + height)]
+            target = [float(pos[0]), float(pos[1]), float(pos[2] + 0.15)]
+        vp_utils.set_camera_view(eye=eye, target=target, camera_prim_path="/OmniverseKit_Persp")
+
     timestep = 0
     # simulate environment
     while simulation_app.is_running():
@@ -177,6 +206,8 @@ def main():
             actions = policy(obs)
             # env stepping
             obs, _, _, _ = env.step(actions)
+        # camera follows the robot so recordings stay framed on it
+        _follow_camera()
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video

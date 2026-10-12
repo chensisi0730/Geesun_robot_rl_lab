@@ -69,7 +69,7 @@ class UnitreeGo2PPORunnerCfg(BasePPORunnerCfg):
         entropy_coef=0.02,
         num_learning_epochs=4,
         num_mini_batches=8,
-        learning_rate=2.0e-04,
+        learning_rate=1.0e-04,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
@@ -98,6 +98,40 @@ class UnitreeG1PPORunnerCfg(BasePPORunnerCfg):
         num_mini_batches=4,
         learning_rate=1.0e-3,
         schedule="constant",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+    )
+
+
+@configclass
+class UnitreeGeesunDogPPORunnerCfg(BasePPORunnerCfg):
+    """PPO for the GeesunDog (dog1) flat-terrain velocity task.
+
+    Minimal change (2026-10-12): hyper-parameters identical to :class:`BasePPORunnerCfg`
+    (re-declared explicitly so the auto-tuner's knob edits are scoped to this class and can
+    never touch the shared Base used by other robots); only ``experiment_name`` differs so
+    runs land in ``logs/rsl_rl/unitree_geesun_dog/`` and the 6h monitor / auto-tuner can
+    follow this campaign independently of the Go2 one.
+    """
+
+    experiment_name = "unitree_geesun_dog"
+    policy = RslRlPpoActorCriticCfg(
+        init_noise_std=1.0,
+        actor_hidden_dims=[512, 256, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+    )
+    algorithm = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=1.0e-3,
+        schedule="adaptive",
         gamma=0.99,
         lam=0.95,
         desired_kl=0.01,

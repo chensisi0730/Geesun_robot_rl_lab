@@ -53,8 +53,11 @@ import tb_curves as tbc  # noqa: E402
 REPO = Path(__file__).resolve().parents[1]
 RUNS_ROOT = REPO / "logs" / "rsl_rl"
 # Follow whichever Go2 experiment is live (velocity, _ht ablation variants, ...).
-RUNS_GLOB = "unitree_go2_velocity*/*"
-MON_DIR = REPO / "outputs" / "monitor"
+# Every campaign-specific constant below is overridable through the environment so a second
+# monitor instance (e.g. the GeesunDog dog1 flat campaign, see scripts/monitor_tb_check_dog.sh)
+# can run next to the Go2 one with its own task, log glob and state dirs. Defaults = Go2.
+RUNS_GLOB = os.environ.get("MON_RUNS_GLOB", "unitree_go2_velocity*/*")
+MON_DIR = Path(os.environ.get("MON_DIR", str(REPO / "outputs" / "monitor")))
 STATE_PATH = MON_DIR / "state.json"
 REPORT_PATH = MON_DIR / "report.md"
 CURVES_PATH = MON_DIR / "curves.md"
@@ -62,10 +65,12 @@ AUTOTUNE_SCRIPT = REPO / "scripts" / "autotune.py"
 AUTO_TUNE = True  # master switch (the autotuner also honours outputs/autotune/DISABLED)
 
 PY = sys.executable
-TASK = "Unitree-Go2-Velocity"
-NUM_ENVS = 18000  # aligned with the manually launched runs since 2026-09-24
-LOG_GLOB = "/tmp/train_go2_v*.log"
-TRAIN_PATTERN = r"train\.py.*Unitree-Go2-Velocity"
+TASK = os.environ.get("MON_TASK", "Unitree-Go2-Velocity")
+NUM_ENVS = int(os.environ.get("MON_NUM_ENVS", "18000"))  # aligned with the manually launched runs since 2026-09-24
+LOG_PREFIX = os.environ.get("MON_LOG_PREFIX", "/tmp/train_go2_v")
+LOG_GLOB = LOG_PREFIX + "*.log"
+RESUME_LOG = os.environ.get("MON_RESUME_LOG", LOG_PREFIX + "_auto.log")
+TRAIN_PATTERN = os.environ.get("MON_TRAIN_PATTERN", r"train\.py.*Unitree-Go2-Velocity")
 LAST_N = 200  # iterations considered for the snapshot
 RESUME_COOLDOWN_S = 600  # crash-loop guard for auto-resume
 VALUE_LOSS_ABORT = 100.0  # value_loss median above this == diverged value function
@@ -199,7 +204,7 @@ def try_auto_resume(state: dict, run_dir: Path | None) -> str:
     if not ckpts:
         return "no checkpoint available - manual restart needed"
     ckpt = ckpts[-1]
-    logf = open("/tmp/train_go2_auto.log", "ab")
+    logf = open(RESUME_LOG, "ab")
     # The velocity command's debug_vis spawns a remote USD (arrow marker) at startup;
     # isaaclab's check_usd_path_with_timeout gives up after 300 s when the local proxy is
     # down (e.g. right after a machine restart), which kills the resume with FileNotFoundError.

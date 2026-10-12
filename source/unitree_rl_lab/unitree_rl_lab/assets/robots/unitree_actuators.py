@@ -237,14 +237,32 @@ class UnitreeActuatorCfg_W4010_25(UnitreeActuatorCfg):
 
 @configclass
 class UnitreeActuatorCfg_GeesunDog(UnitreeActuatorCfg):
-    """Approximation for the Geesun dog (dog1) actuators.
+    """Self-contained actuator + PD parameter set for the Geesun dog (dog1).
 
-    The URDF does not specify actuator models, so this uses a GO2-like
-    torque-speed curve as a reasonable default for a medium-sized quadruped.
-    Adjust Y1/Y2/X1/X2/armature if you have real specs.
+    Isolation contract (2026-10-12): every field is declared explicitly here, so editing
+    GeesunDog parameters can never affect GO2/H1/G1 (and vice versa: editing Go2HV or the
+    shared UnitreeActuatorCfg base cannot change GeesunDog). The PD gains
+    (stiffness/damping/friction) live here too - unitree.py just passes joint names.
+
+    Values were originally derived by linear mass scaling from GO2 (whose parameters are the
+    verified ones): r = m_dog1 / m_go2 = 41.4172 kg (dog921.urdf link masses) / 15.0 kg
+    (GO2 spec) = 2.7611 -> Y1/Y2 = 20.2/23.4 x r, k/b/friction = 25/0.5/0.01 x r. Speed
+    limits X1/X2 are motor properties and stay at GO2's 13.5/30 rad/s. Replace with real
+    specs when available.
     """
 
+    # torque-speed curve (N*m, rad/s)
     X1 = 13.5
     X2 = 30.0
-    Y1 = 25.0
-    Y2 = 30.0
+    Y1 = 55.8
+    Y2 = 64.6
+    # friction model
+    Fs = 0.0
+    Fd = 0.0
+    Va = 0.01
+    # rotor inertia (no real spec yet)
+    armature = 0.0
+    # PD gains (position servo)
+    stiffness = 69.0
+    damping = 1.38
+    friction = 0.028

@@ -164,7 +164,24 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
 
 # 使用任务的 play 配置地形，省略 checkpoint 时自动选择最新结果
 conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity --terrain play
+
+# GeesunDog（Geesun 狗，dog1）关节力矩统计（硬件选型参考），换 --task 即可
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
+    --task Unitree-GeesunDog-Velocity --terrain flat --steps 1000
 ```
+
+> **GeesunDog 硬件选型力矩测试（2026-10-12 起）：** `scripts/torque_test_when_done.sh <train_pid>`
+> 会在训练结束后自动跑 `flat`（平地名义工况）+ `complex`（复杂地形压力）两组力矩统计
+> （需独占 GPU（图形处理器），故等待训练结束；期间会写 stop_marker 阻止 6h 监控自动续训）。
+> CSV 保存在 `logs/rsl_rl/unitree_geesun_dog/<run>/`。GeesunDog 的 PD/执行器参数自包含在
+> `UnitreeActuatorCfg_GeesunDog`（`unitree_actuators.py`），与 GO2 等其他机器人完全隔离。
+>
+> **命令范围课程现状（勿再误判为"没有课程"）：** GeesunDog 用非门控版
+> `mdp.lin_vel_cmd_levels`（`CurriculumCfg.lin_vel_cmd_levels`），x/y 轴按跟踪奖励阈值
+> 每步 ±0.1 扩展（TB tag `Curriculum/lin_vel_cmd_levels` 单标量，2026-10-12 已从 0.1 扩到
+> 上限 1.0 m/s）；yaw 轴不参与课程。monitor/autotune 的 `x_max`/`success_*` 口径是 GO2
+> 门控版（`gated_lin_vel_cmd_levels`）专属，在 GeesunDog 上显示 None/不可用属预期。
+> 是否升级门控版留待本轮训练与力矩测试之后再决定（2026-10-12 决策：保持现状）。
 
 **参数：**
 
@@ -199,6 +216,15 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py --task U
 > 解决（二选一）：
 > 1. 脚本已在结果打印结束后显式 `sys.stdout.flush()`，直接重新运行即可；
 > 2. 或运行时加 `-u` 关闭缓冲：`python -u scripts/rsl_rl/test_flat_walk.py ...`。
+
+> **回放相机跟随（2026-10-12 起）：** `scripts/rsl_rl/play.py` 录像/回放时视角自动跟随机器人
+> （走远不再出画；实现见 play.py 的 `_follow_camera()`，每步更新视口相机位姿），风格由
+> `--camera_view` 参数选择：`side`（侧面）为默认——相机在机器人侧方 2.2 m、上方 1.1 m，
+> 保持看向机首，不随偏航角（yaw）旋转（侧向跟拍）；`rear`（后面）——相机在机器人身后
+> 2.2 m、上方 1.1 m，随偏航角转动（身后追拍）。
+> 用法：`python scripts/rsl_rl/play.py ... --camera_view side`（可省略）/ `--camera_view rear`。
+
+> **电机选型（motor sizing）：** 关节力矩数据与选型结论汇总见 [doc/motor_sizing.md](doc/motor_sizing.md)。
 
 ## 验证训练结果
 
@@ -240,7 +266,7 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
     --steps 1000
 
 # 分地形定位短板
-for terrain in random_rough boxes stairs; do
+for terrain in random_rough stairs; do
     conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
         --task Unitree-Go2-Velocity --terrain "$terrain" --steps 1000
 done
@@ -291,7 +317,7 @@ grep -c 'Patch buffer overflow' /tmp/train_go2.log
 - 计数为 0：物理管线健康；
 - 计数 > 0 且逐物理步重复打印：该 run 的数据不可用于验收，需降低 `num_envs` 或
   简化地形碰撞网格后重新训练（见 `doc/training_monitoring.md` §3.1/§3.5）；
-- 监控脚本（`scripts/monitor_tb_check.py`，每 4h 一轮）发现**新增** overflow 行会立即终止
+- 监控脚本（`scripts/monitor_tb_check.py`，每 6h 一轮）发现**新增** overflow 行会立即终止
   训练进程组（SIGTERM→SIGKILL）并抑制自动 resume，直到人工重启新 run 后标记自动清除
   （机制见 `doc/training_monitoring.md`）。
 
@@ -299,7 +325,7 @@ grep -c 'Patch buffer overflow' /tmp/train_go2.log
 
 - [ ] 平地行走稳定，无明显晃动
 - [ ] 复杂地形上能持续前进
-- [ ] `flat/random_rough/boxes/stairs` 分项成功率均达到 90%
+- [ ] `flat/random_rough/stairs` 分项成功率均达到 90%
 - [ ] `error_vel_xy <= 0.25 m/s`、`error_vel_yaw <= 0.35 rad/s`
 - [ ] `time_out >= 99%`、`bad_orientation <= 1%`
 - [ ] 复杂地形下力矩没有异常峰值
@@ -342,7 +368,7 @@ grep -c 'Patch buffer overflow' /tmp/train_go2.log
 | `--calf_amp_deg` | 0（= `--amp_deg`） | calf 专用摆动幅度（度）；calf 真实限位 `[-1.885, 0]`，base -1.4 时最大对称幅度仅 ~27.8°，放大 calf 摆动需配合 `--calf_base -1.1`（如 `--calf_base -1.1 --calf_amp_deg 40`，峰-峰 80°，范围 `[-1.798, -0.402]` 不触限位） |
 | `--settle_steps` | 100 | `--no_pin_root` 模式下先在 `--root_z` 钉住根多少步（让 PD 收敛到站姿）再释放 |
 | `--no_self_collision` | 关 | 关闭自碰撞（退化网格细条可能卡腿，消融用） |
-| `--stiffness` / `--damping` | 0（=CFG 值） | 运行时覆盖 PD 增益（CFG 默认 k=30, b=1） |
+| `--stiffness` / `--damping` | 0（=CFG 值） | 运行时覆盖 PD 增益（CFG 默认 k=69.0, b=1.38，2026-10-12 起按质量比 2.7611 从 GO2 的 k=25/b=0.5 线性缩放；旧默认 k=30, b=1） |
 | `--print_contact` | 关 | 每 100 步打印各关节施加力矩（N·m） |
 
 **用法：**
@@ -423,9 +449,20 @@ python scripts/geesun_dog/move_geesun_dog.py --no_pin_root --root_z 0.17 --num_s
 **任务训练（可选）：**
 
 ```bash
-./unitree_rl_lab.sh -t --task Unitree-GeesunDog-Velocity --num_envs 4096
-tensorboard --logdir logs/rsl_rl/
+# dog1 平地训练（GEESUN_DOG_VARIANT 默认 dog1；地形 sub_terrains 仅 flat）
+GEESUN_DOG_VARIANT=dog1 ./unitree_rl_lab.sh -t --task Unitree-GeesunDog-Velocity --num_envs 14096
+# run 目录：logs/rsl_rl/unitree_geesun_dog/<时间戳>/（experiment_name=unitree_geesun_dog）
+tensorboard --logdir logs/rsl_rl/unitree_geesun_dog
 ```
+
+> **6h 监控/自动调参实例（2026-10-12 起）：** GeesunDog 战役有独立的监控闭环，与 Go2 的
+> 互不干扰（独立 state 目录 `outputs/monitor_dog/`、`outputs/autotune_dog/`）：
+> ```bash
+> nohup bash scripts/monitor_tb_check_dog.sh >> outputs/monitor_dog/monitor.log 2>&1 &
+> ```
+> 每 6h 检查曲线 → 恶化时自动停止训练、修改超参（PPO 类 scope 为
+> `UnitreeGeesunDogPPORunnerCfg`，奖励类编辑 geesun_dog 的 `velocity_env_cfg.py`）并重启。
+> 报告：`outputs/monitor_dog/report.md`；关掉自动调参：`touch outputs/autotune_dog/DISABLED`。
 
 > **注意：** 若关节位置冻结在固定姿态，说明腿与地面或彼此卡死——可在脚本中调高基座高度（`default_root[0, 2]`）或减小 `--amp_deg`。
 
