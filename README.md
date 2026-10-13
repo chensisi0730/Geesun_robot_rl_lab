@@ -102,6 +102,10 @@
     conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
         --task Unitree-Go2-Velocity --num_envs 12000 \
         --resume --load_run RUN_ID 2>&1 | tee /tmp/train_go2_resume.log
+
+    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
+        --task Unitree-GeesunDog-Velocity --num_envs 22000 \
+        --resume --load_run 2026-10-12_20-24-42 2>&1 | tee /tmp/train_GeesunDog_resume.log        
     ```
 
     训练日志和 checkpoint 默认保存在 `logs/rsl_rl/unitree_go2_velocity/`。
@@ -176,12 +180,14 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
 > CSV 保存在 `logs/rsl_rl/unitree_geesun_dog/<run>/`。GeesunDog 的 PD/执行器参数自包含在
 > `UnitreeActuatorCfg_GeesunDog`（`unitree_actuators.py`），与 GO2 等其他机器人完全隔离。
 >
-> **命令范围课程现状（勿再误判为"没有课程"）：** GeesunDog 用非门控版
-> `mdp.lin_vel_cmd_levels`（`CurriculumCfg.lin_vel_cmd_levels`），x/y 轴按跟踪奖励阈值
-> 每步 ±0.1 扩展（TB tag `Curriculum/lin_vel_cmd_levels` 单标量，2026-10-12 已从 0.1 扩到
-> 上限 1.0 m/s）；yaw 轴不参与课程。monitor/autotune 的 `x_max`/`success_*` 口径是 GO2
-> 门控版（`gated_lin_vel_cmd_levels`）专属，在 GeesunDog 上显示 None/不可用属预期。
-> 是否升级门控版留待本轮训练与力矩测试之后再决定（2026-10-12 决策：保持现状）。
+> **命令范围课程现状（2026-10-13 起 = GO2 双课程策略）：** GeesunDog 的 `CurriculumCfg` 已引入
+> GO2 同款双课程：`terrain_levels_vel_strict`（地形难度，存活+跟踪滞回门控）与
+> `gated_lin_vel_cmd_levels`（速度命令范围，x/y 与 yaw 独立门控、成功门槛、`state_file`
+> 持久化到 `logs/rsl_rl/unitree_geesun_dog/curriculum_state.json`），另有
+> `terrain_performance_by_type`（分地形表现）与 `command_ranges`（命令范围全量观测）。
+> monitor/autotune 的 `x_max`/`success_*` 口径与课程旋钮（`success_xy`/`lin_increment` 等）
+> 均随之生效。背景：2026-10-12 非门控版在复杂地形续训中命令范围跑赢地形能力导致崩溃
+> （14700 轮白训，run `2026-10-12_23-40-21`），故升级为同步门控。
 
 **参数：**
 
@@ -242,6 +248,10 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
 # 或指定训练运行目录
 conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
     --task Unitree-Go2-Velocity --load_run RUN_ID
+
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
+    --task Unitree-GeesunDog-Velocity --load_run 2026-10-13_10-07-28
+
 ```
 
 观察要点：
@@ -264,6 +274,11 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
     --task Unitree-Go2-Velocity \
     --terrain complex \
     --steps 1000
+
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
+    --task Unitree-GeesunDog-Velocity \
+    --terrain complex \
+    --steps 1000    
 
 # 分地形定位短板
 for terrain in random_rough stairs; do
@@ -450,7 +465,7 @@ python scripts/geesun_dog/move_geesun_dog.py --no_pin_root --root_z 0.17 --num_s
 
 ```bash
 # dog1 平地训练（GEESUN_DOG_VARIANT 默认 dog1；地形 sub_terrains 仅 flat）
-GEESUN_DOG_VARIANT=dog1 ./unitree_rl_lab.sh -t --task Unitree-GeesunDog-Velocity --num_envs 14096
+GEESUN_DOG_VARIANT=dog1 ./unitree_rl_lab.sh -t --task Unitree-GeesunDog-Velocity --num_envs 24096
 # run 目录：logs/rsl_rl/unitree_geesun_dog/<时间戳>/（experiment_name=unitree_geesun_dog）
 tensorboard --logdir logs/rsl_rl/unitree_geesun_dog
 ```
@@ -466,30 +481,33 @@ tensorboard --logdir logs/rsl_rl/unitree_geesun_dog
 
 > **注意：** 若关节位置冻结在固定姿态，说明腿与地面或彼此卡死——可在脚本中调高基座高度（`default_root[0, 2]`）或减小 `--amp_deg`。
 
-**lingsi_d30w（D30W 轮足，STEP 转换）：** 变体目录现已含转换好的 `urdf/lingsi_d30w.urdf` + 17 个 STL
-（17 link：base + 4×hip/thigh/calf/wheel；16 关节，其中 4 个 `joint_*_wheel` 为 `continuous` 轮关节），
-可直接加载：
+**lingsi_d30w（D30W 轮足，厂家 URDF，2026-10-13 起）：** 变体目录含厂家 SolidWorks（CAD 软件）直接导出的
+`urdf/lingsi_d30w.urdf`（robot（机器人）名 A01mW，17 link（连杆）：trunk（躯干）+ 4×hip/thigh/calf/wheel；
+16 joint（关节），其中 4 个轮关节为 `revolute`（旋转关节）limit ±999999，等效 `continuous`（连续旋转））
++ 17 个厂家 STL 网格（`meshes/`，来自厂家包 `meshes-ok.zip`）。加载时 `_prepare_geesun_dog_urdf()`
+自动把厂家命名（`FR_hip_joint`/`trunk`/`FR_wheel_motor`）改写为代码约定命名
+（`joint_fr_hip`/`base_link`/`joint_fr_wheel`），mesh（网格）引用改写为绝对路径，并按
+`urdf/D30W关节电气参数.xlsx` 覆盖 effort/velocity（力矩/角速度）上限，可直接加载：
 
 ```bash
 python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --headless --num_steps 400
 # 轮关节按 --wheel_speed 匀速自转（默认 10 rad/s，0 = 锁死只动腿）
-# GUI 渲染（calf 幅度放大 + 一直运行直到关窗）：
+# GUI 渲染（一直运行直到关窗；D30W calf（小腿）限位 [0.536, 2.775] rad，calf 幅度取小避免触限位）：
 python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --num_steps 0 --root_z 1.0 \
-    --calf_base -1.1 --calf_amp_deg 40 --wheel_speed 10
+    --calf_base 0.8 --calf_amp_deg 15 --wheel_speed 10
 ```
 
-注意：关节 origin 由 STEP 装配树自动解析，**尚待实测标定**；`base.stl` 已抽稀为 23.7 万面 / 12 MB
-（全精度 65 MB 版可从 git 历史找回，见 [doc/step_to_urdf.md](doc/step_to_urdf.md) §3c）；
-原始 `D30W轮足外发.STEP`（204 MB）保留在变体目录但不入 git（见 .gitignore）。
-重新转换的完整流程（工具选择、STL 导出脚本、关节参数、URDF 模板、代码契约与验证步骤）
-见 [doc/step_to_urdf.md](doc/step_to_urdf.md)。
+注意：关节 origin（关节原点）来自厂家 CAD，**尚待实测标定**；关节限位（hip ±0.698、thigh [-3.054, 1.0]、
+calf [0.536, 2.775] rad）为厂家导出值。STEP → URDF（统一机器人描述格式）自动转换脚本
+`scripts/lingsi_d30w/step_to_urdf_d30w.py` 已于 2026-10-13 删除（厂家 URDF 到位后不再需要，
+git 历史可找回）；原始 `D30W轮足外发.STEP`（204 MB）已从本地删除（.gitignore 条目保留，
+需要时向厂家重新索取）。从 STEP 重新转换的完整历史流程见 [doc/step_to_urdf.md](doc/step_to_urdf.md)。
 
-> **注意（10/8，上下颠倒修复）：** D30W 的 URDF 是 **z 朝下坐标系**导出的（URDF 头注释
-> `x=前(+), y=左(+), z=下(+)`），而 Isaac Sim 为 z-up，直接加载时整机上下颠倒（轮子在机身
-> 上方；FK 验证：站姿下 wheel 中心在 base 原点上方 +0.206 m）。`move_geesun_dog.py` 现已对
-> `--variant lingsi_d30w` 把 root 绕 x 轴翻转 180°（quaternion (0,1,0,0)）使轮子朝下；
-> 副作用是模型原生左右镜像（fl 腿显示在右侧），不影响 trot 对角相位结构。**训练/`play.py`
-> 等其它入口在改用 z-up 的 URDF 重新转换（`doc/step_to_urdf.md`）之前，仍会显示为倒置。**
+> **注意（10/8 上下颠倒问题，2026-10-13 已解决）：** 旧 STEP 转换版 URDF 是 **z 朝下坐标系**导出，
+> Isaac Sim 为 z-up，直接加载时整机上下颠倒（轮子在机身上方）。现已改用厂家 **z-up** URDF
+> （`GEESUN_DOG_VARIANT_SPECS["lingsi_d30w"]`：`z_down=False`，无需 180°（度）root（根节点）翻转，
+> `root_z=0.61`，站姿 thigh（大腿）-0.397 / calf 0.8），训练 / `play.py` / `move_geesun_dog.py`
+> 各入口一致，左右镜像副作用也随之消失。
 
 ## 部署
 

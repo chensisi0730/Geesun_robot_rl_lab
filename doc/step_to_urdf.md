@@ -3,7 +3,22 @@
 把 `geesun_dog_urdf/geesun-dog/lingsi_d30w/D30W轮足外发.STEP` 转成 Isaac Lab 可用的
 URDF + 网格，使 `python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w` 能加载。
 
-## ✅ 当前状态：自动转换已完成（2026-09-30）
+## 📌 状态更新（2026-10-13）：厂家 URDF 到位，自动转换脚本已删除
+
+厂家已直接提供 SolidWorks（CAD 软件）导出的 `urdf/lingsi_d30w.urdf`（robot（机器人）名 A01mW、
+z-up 坐标系、17 link（连杆）/ 16 joint（关节），带真实质量/惯量/关节限位）+ 17 个 STL 网格
+（`meshes/`，来自厂家包 `meshes-ok.zip`），现作为 `--variant lingsi_d30w` 的正式资产
+（README lingsi_d30w 一节）；加载时 `_prepare_geesun_dog_urdf()` 把厂家命名
+（`FR_hip_joint`/`trunk`/`FR_wheel_motor`）改写为代码约定命名（`joint_fr_hip`/`base_link`/
+`joint_fr_wheel`）并按 `urdf/D30W关节电气参数.xlsx` 覆盖 effort/velocity（力矩/角速度）上限。因此：
+
+- 自动转换脚本 `scripts/lingsi_d30w/step_to_urdf_d30w.py` 及其产物 `joint_origins.json`
+  已于 2026-10-13 **删除**（git 历史可找回）。
+- 原始 `D30W轮足外发.STEP`（204 MB）已从变体目录删除（.gitignore 条目保留；如需重新
+  STEP 转换，向厂家重新索取）。
+- 以下内容作为 STEP 重转换流程的**历史参考**保留。
+
+## ✅ （已被上述状态取代）当时的当前状态：自动转换已完成（2026-09-30）
 
 ```bash
 conda activate env_isaaclab_sim51        # 运行环境现成：已装 cadquery-ocp 7.9.x，无需再装
