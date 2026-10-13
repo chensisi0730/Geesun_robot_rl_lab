@@ -3,8 +3,30 @@
      Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
      For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
 <robot name="A01mW">
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://quad_description/meshes/A01mw/base_link.STL"/>
+      </geometry>
+      <material name="base_color">
+        <color rgba="0.79216 0.81961 0.93333 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://quad_description/meshes/A01mw/base_link.STL"/>
+      </geometry>
+    </collision>
+  </link>
 
-  <link name="trunk">
+  <joint name="base_inertia_to_base" type="fixed">
+        <parent link="base_link"/>
+        <child link="base_inertia"/>
+        <origin rpy="0 0 0" xyz="0 0 0"/>
+  </joint>
+  <link name="base_inertia">
     <inertial>
       <origin xyz="0.003243 -0.003306 -0.006401" rpy="0.0 0.0 0.0"/>
       <mass value="17.360"/>
@@ -16,34 +38,19 @@
         iyz="0.000376995"
         izz="0.617236"/>
     </inertial>
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="../meshes/base_link.STL"/>
-      </geometry>
-    </visual>
-
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <box size="1.0 0.26 0.22"/> 
-      </geometry>
-    </collision>
-
   </link>
 
-  <joint name="FR_hip_joint" type="revolute">
+  <joint name="leg0_fr_joint0" type="revolute">
     <origin xyz="0.2755 -0.085 0" rpy="0 0 0" />
-    <parent link="trunk"/>
+    <parent link="base_link"/>
     <child link="FR_hip"/>
     <axis xyz="1 0 0"/>
-    <limit lower="-0.698"  upper="0.698" effort="100.0"  velocity="20.0"/>
+    <limit lower="-0.6981"  upper="0.6981" effort="72"  velocity="27"/>
   </joint>
 
   <link name="FR_hip">
-
     <inertial>
-      <origin xyz="-0.00429 0.01675 0.00083" rpy="0 0 0"/>
+      <origin xyz="-0.00429 0.01675 0.000083" rpy="0 0 0"/>
       <mass value="1.655"/>
       <inertia     
         ixx="0.002076985"
@@ -53,34 +60,35 @@
         iyz="0.000003867"
         izz="0.002516870"/>
     </inertial>
-
     <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://quad_description/meshes/A01mw/FR_hip.STL"/>
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1"/>
+      </material>
+    </visual>
+    <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/FR_hip.STL"/>
-      </geometry>
-    </visual>
-
-    <collision>
-      <origin xyz="0 -0.0375 0" rpy="1.570795 0 0"/>
-      <geometry>
-        <cylinder length="0.175" radius="0.0625"/>
+        <mesh filename="package://quad_description/meshes/A01mw/FR_hip.STL"/>
       </geometry>
     </collision>
-
   </link>
   
-  <joint name="FR_thigh_joint"   type="revolute">
+  <joint name="leg0_fr_joint1"  type="revolute">
     <origin xyz="0 -0.0905 0" rpy="0 0 0"/>
     <parent link="FR_hip"/>
     <child  link="FR_thigh"/>
     <axis  xyz="0 -1 0"/>
-    <limit lower="-3.054" upper="1.0" effort="100.0" velocity="20.0"/>
+    <limit lower="-3.05" upper="0.6981" effort="72" velocity="27"/>
   </joint>
 
   <link name="FR_thigh">
-
-  <inertial>
+    <inertial>
       <origin xyz="-0.00549 0.029449 -0.045721" rpy="0 0 0"/>
       <mass value="2.085"/>
       <inertia
@@ -91,33 +99,34 @@
         iyz="-0.002889972"
         izz="0.003757909"/>
     </inertial>
-
     <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://quad_description/meshes/A01mw/FR_thigh.STL"/>
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1"/>
+      </material>
+    </visual>
+    <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/FR_thigh.STL"/>
-      </geometry>
-    </visual>
-
-    <collision>
-      <origin xyz="-0.01 -0.01 -0.14" rpy="0 0 0"/>
-      <geometry>
-        <box size="0.07 0.04 0.28"/>
+        <mesh filename="package://quad_description/meshes/A01mw/FR_thigh.STL"/>
       </geometry>
     </collision>
-
   </link>
   
-  <joint name="FR_calf_joint" type="revolute">
+  <joint name="leg0_fr_joint2" type="revolute">
     <origin xyz="0 0 -0.28"  rpy="0 0 0"/>
     <parent link="FR_thigh"/>
     <child link="FR_calf"/>
     <axis xyz="0 -1 0"/>
-    <limit  lower="0.536"  upper="2.775"  effort="160.0" velocity="15.0"/>
+    <limit  lower="0.525"  upper="2.765"  effort="136" velocity="14"/>
   </joint>
 
   <link name="FR_calf">
-
     <inertial>
       <origin
         xyz="0.00439626412134908 -0.0122250244398628 -0.214276680633871"
@@ -132,139 +141,84 @@
         iyz="-0.000205145434425647"
         izz="0.000679927871172336" />
     </inertial>
-
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/FR_calf.STL"/>
+        <mesh filename="package://quad_description/meshes/A01mw/FR_calf.STL"/>
       </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1"/>
+      </material>
     </visual>
-
-
-
-
     <collision>
       <origin
-        xyz="-0.002 0 -0.05"
-        rpy="0 -0.3 0.0"/>
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <box size="0.01 0.026 0.12"/>
+        <mesh filename="package://quad_description/meshes/A01mw/FR_calf.STL"/>
       </geometry>
     </collision>
-
-    <collision>
-      <origin
-        xyz="0.021 0 -0.11"
-        rpy="0 -0.055 0.0"/>
-      <geometry>
-        <box size="0.021 0.026 0.22"/>
-      </geometry>
-    </collision>
-
-    <collision>
-      <origin
-        xyz="0.002 0 -0.23"
-        rpy="0 0.47 0.0"/>
-      <geometry>
-        <box size="0.01 0.026 0.08"/>
-      </geometry>
-    </collision>
-
-     <collision>
-      <origin
-        xyz="0.028 0 -0.245"
-        rpy="0 0.19 0.0"/>
-      <geometry>
-        <box size="0.01 0.026 0.056"/>
-      </geometry>
-    </collision>
-
   </link>
   
   
-  <joint name="FR_wheel_motor" type="revolute">
+  <joint name="fr_wheel_joint" type="revolute">
     <parent link="FR_calf"/>
-    <child link="FR_wheel"/>
+    <child link="fr_wheel"/>
     <origin xyz="0 -0.0676 -0.275" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
-    <limit lower="-999999" upper="999999" effort="14.0" velocity="65"/>
+    <limit lower="-999999" upper="999999" effort="20.0" velocity="65"/>
   </joint>
 
-  <link name="FR_wheel">
+  <!-- Wheel link -->
+  <link name="fr_wheel">
     <inertial>
-      <origin xyz="0 -0.001393 0" rpy="0 0 0"/>
-      <mass value="0.998507"/>
+      <origin xyz="-7.2426E-08 -0.0013933 2.8764E-07" rpy="0 0 0" />
+      <mass value="0.9985"/>
       <inertia
-        ixx="0.00263190"
-        ixy="0"
-        ixz="0"
-        iyy="0.00502601"
-        iyz="0"
-        izz="0.00263193"/>
+        ixx="0.0026291"
+        ixy="2.1017E-09"
+        ixz="-1.1009E-08"
+        iyy="0.005026"
+        iyz="-7.5199E-10"
+        izz="0.0026291" />
     </inertial>
-    
     <visual>
+      <origin  xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://quad_description/meshes/A01mw/FR_wheel.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/FR_wheel.STL"/>
-      </geometry>
-    </visual>
-
-    <!-- continuous crown: r(y)=sqrt(R^2-y^2), R=0.095; center contacts first -->
-    <collision>
-      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.095" length="0.008"/>
+        <mesh filename="package://quad_description/meshes/A01mw/FR_wheel.STL"/>
       </geometry>
     </collision>
-    <collision>
-      <origin xyz="0 0.009 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09457" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 -0.009 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09457" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 0.018 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09328" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 -0.018 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09328" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 0.0488 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.045" length="0.0976"/>
-      </geometry>
-    </collision>
-
   </link>
 
   <!-- FL leg -->
-  <joint name="FL_hip_joint" type="revolute">
+  <joint name="leg1_fl_joint0" type="revolute">
     <origin xyz="0.2755 0.085 0" rpy="0 0 0"/>
-    <parent link="trunk"/>
+    <parent link="base_link"/>
     <child
       link="FL_hip"/>
     <axis
       xyz="1 0 0"/>
-    <limit lower="-0.698"  upper="0.698" effort="100.0"  velocity="20.0"/>
+    <limit lower="-0.6981" upper="0.6981" effort="72" velocity="27"/>
   </joint>
 
   <link name="FL_hip">
-
     <inertial>
-      <origin xyz="-0.00429 -0.01675 0.00083" rpy="0 0 0"/>
+      <origin xyz="-0.00429 -0.01675 0.000083" rpy="0 0 0"/>
       <mass value="1.655"/>
       <inertia     
         ixx="0.002076985"
@@ -274,34 +228,35 @@
         iyz="-0.000003867"
         izz="0.002516870"/>
     </inertial>
-
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/FL_hip.STL"/>
+        <mesh filename="package://quad_description/meshes/A01mw/FL_hip.STL"/>
       </geometry>
+      <material
+        name="">
+        <color rgba="1 1 1 1"/>
+      </material>
     </visual>
-
     <collision>
-      <origin xyz="0 0.0375 0" rpy="1.570795 0 0"/>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <cylinder length="0.175" radius="0.0625"/>
-        <!-- <mesh filename="./meshes/A01b/hl_abad.STL"/> -->
+        <mesh filename="package://quad_description/meshes/A01mw/FL_hip.STL"/>
       </geometry>
     </collision>
-
   </link>
 
-<joint name="FL_thigh_joint" type="revolute">
+<joint name="leg1_fl_joint1" type="revolute">
     <origin xyz="0 0.0905 0" rpy="0 0 0"/>
     <parent link="FL_hip"/>
     <child link="FL_thigh"/>
     <axis xyz="0 -1 0"/>
-    <limit lower="-3.054" upper="1.0" effort="100.0" velocity="20.0"/>
+    <limit lower="-3.05" upper="0.6981" effort="72" velocity="27"/>
   </joint>
   
   <link name="FL_thigh">
-
     <inertial>
       <origin xyz="-0.00549 -0.029449 -0.045721" rpy="0 0 0"/>
       <mass value="2.085"/>
@@ -313,33 +268,33 @@
         iyz="0.002889972"
         izz="0.003757909"/>
     </inertial>
-
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/FL_thigh.STL"/>
+        <mesh filename="package://quad_description/meshes/A01mw/FL_thigh.STL"/>
       </geometry>
+      <material
+        name="">
+        <color rgba="1 1 1 1"/>
+      </material>
     </visual>
-
     <collision>
-      <origin xyz="-0.01 0.01 -0.14" rpy="0 0 0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <box size="0.07 0.04 0.28"/>
+        <mesh filename="package://quad_description/meshes/A01mw/FL_thigh.STL"/>
       </geometry>
     </collision>
-
   </link>
 
-  <joint name="FL_calf_joint" type="revolute">
+  <joint name="leg1_fl_joint2" type="revolute">
     <origin xyz="0 0 -0.28" rpy="0 0 0"/>
     <parent link="FL_thigh"/>
     <child link="FL_calf"/>
     <axis xyz="0 -1 0"/>
-    <limit  lower="0.536"  upper="2.775"  effort="160.0" velocity="15.0"/>
+    <limit  lower="0.525"  upper="2.765"  effort="136" velocity="14"/>
   </joint>
 
   <link name="FL_calf">
-
     <inertial>
       <origin
         xyz="0.00439655661603894 0.0122246469328486 -0.214271106149712"
@@ -354,138 +309,83 @@
         iyz="0.000205142636346584"
         izz="0.000679922735873637" />
     </inertial>
-
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/FL_calf.STL"/>
+        <mesh filename="package://quad_description/meshes/A01mw/FL_calf.STL"/>
       </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1"/>
+      </material>
     </visual>
-
-
-
-
     <collision>
       <origin
-        xyz="-0.002 0 -0.05"
-        rpy="0 -0.3 0.0"/>
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <box size="0.01 0.026 0.12"/>
+        <mesh filename="package://quad_description/meshes/A01mw/FL_calf.STL"/>
       </geometry>
     </collision>
-
-    <collision>
-      <origin
-        xyz="0.021 0 -0.11"
-        rpy="0 -0.055 0.0"/>
-      <geometry>
-        <box size="0.021 0.026 0.22"/>
-      </geometry>
-    </collision>
-
-    <collision>
-      <origin
-        xyz="0.002 0 -0.23"
-        rpy="0 0.47 0.0"/>
-      <geometry>
-        <box size="0.01 0.026 0.08"/>
-      </geometry>
-    </collision>
-
-    <collision>
-      <origin
-        xyz="0.028 0 -0.245"
-        rpy="0 0.19 0.0"/>
-      <geometry>
-        <box size="0.01 0.026 0.056"/>
-      </geometry>
-    </collision>
-
   </link>
 
-  <joint name="FL_wheel_motor" type="revolute">
+  <joint name="fl_wheel_joint" type="revolute">
     <parent link="FL_calf"/>
-    <child link="FL_wheel"/>
-    <origin xyz="0 0.0676 -0.275" rpy="0 0 0"/>
-    <axis xyz="0 -1 0"/>
-    <limit lower="-999999" upper="999999" effort="14.0" velocity="65"/>
+    <child link="fl_wheel"/>
+    <origin xyz="0 0.0676 -0.27498" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-999999" upper="999999" effort="20.0" velocity="65"/>
   </joint>
+
   <!-- Wheel link -->
-  <link name="FL_wheel">
+  <link name="fl_wheel">
     <inertial>
-      <origin xyz="0 0.001393 0" rpy="0 0 0"/>
-      <mass value="0.998507"/>
+      <origin xyz="1.4779E-07 0.0013933 3.5963E-07" rpy="0 0 0"/>
+      <mass value="0.99851"/>
       <inertia
-        ixx="0.00263190"
-        ixy="0"
-        ixz="0"
-        iyy="0.00502601"
-        iyz="0"
-        izz="0.00263193"/>
+        ixx="0.0026291"
+        ixy="-1.17E-09"
+        ixz="-4.1839E-09"
+        iyy="0.005026"
+        iyz="1.0954E-09"
+        izz="0.0026291" />
     </inertial>
-    
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin  xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="../meshes/FL_wheel.STL"/>
+        <mesh filename="package://quad_description/meshes/A01mw/FL_wheel.STL" />
       </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
     </visual>
-
-    <!-- continuous crown: r(y)=sqrt(R^2-y^2), R=0.095; center contacts first -->
     <collision>
-      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <cylinder radius="0.095" length="0.008"/>
+        <mesh filename="package://quad_description/meshes/A01mw/FL_wheel.STL" />
       </geometry>
     </collision>
-    <collision>
-      <origin xyz="0 0.009 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09457" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 -0.009 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09457" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 0.018 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09328" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 -0.018 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09328" length="0.008"/>
-      </geometry>
-    </collision>
-       <collision>
-      <origin xyz="0 -0.0488 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.045" length="0.0976"/>
-      </geometry>
-    </collision>
-
   </link>
 
   <!-- RR leg -->
-  <joint name="RR_hip_joint" type="revolute">
+  <joint name="leg2_hr_joint0" type="revolute">
     <origin xyz="-0.2755 -0.085 0" rpy="0 0 0"/>
-    <parent link="trunk"/>
+    <parent link="base_link"/>
     <child link="RR_hip"/>
     <axis xyz="1 0 0"/>
-    <limit lower="-0.698"  upper="0.698" effort="100.0"  velocity="20.0"/>
+    <limit lower="-0.6981" upper="0.6981" effort="72" velocity="27"/>
   </joint>
 
   <link name="RR_hip">
-
     <inertial>
-      <origin xyz="0.00429 0.01675 0.00083" rpy="0 0 0"/>
+      <origin xyz="0.00429 0.01675 0.000083" rpy="0 0 0"/>
       <mass value="1.655"/>
-      <inertia
+      <inertia     
         ixx="0.002076985"
         ixy="-0.000138579"
         ixz="-0.000006971"
@@ -493,35 +393,40 @@
         iyz="0.000003867"
         izz="0.002516870"/>
     </inertial>
-
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/RR_hip.STL"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RR_hip.STL"/>
       </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1"/>
+      </material>
     </visual>
-
     <collision>
-      <origin xyz="0 -0.0375 0" rpy="1.570795 0 0"/>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <cylinder length="0.175" radius="0.0625"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RR_hip.STL"/>
       </geometry>
     </collision>
-
   </link>
-
-  <joint name="RR_thigh_joint" type="revolute">
+  
+  <joint name="leg2_hr_joint1" type="revolute">
     <origin xyz="0 -0.0905 0" rpy="0 0 0"/>
     <parent link="RR_hip"/>
     <child link="RR_thigh"/>
     <axis xyz="0 -1 0"/>
-    <limit lower="-3.054" upper="1.0" effort="100.0" velocity="20.0"/>
+    <limit lower="-3.05" upper="0.6981" effort="72" velocity="27"/>
   </joint>
 
   <link name="RR_thigh">
-
     <inertial>
-      <origin xyz="0.00549 0.029449 -0.045721" rpy="0 0 0"/>
+      <origin xyz="-0.00549 0.029449 -0.045721" rpy="0 0 0"/>
       <mass value="2.085"/>
       <inertia
         ixx="0.018499197"
@@ -531,168 +436,119 @@
         iyz="-0.002889972"
         izz="0.003757909"/>
     </inertial>
-
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/RR_thigh.STL"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RR_thigh.STL"/>
       </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1"/>
+      </material>
     </visual>
-
     <collision>
-      <origin xyz="-0.01 -0.01 -0.14" rpy="0 0 0"/>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <box size="0.07 0.04 0.28"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RR_thigh.STL"/>
       </geometry>
     </collision>
-
   </link>
   
-  <joint name="RR_calf_joint" type="revolute">
+  <joint name="leg2_hr_joint2" type="revolute">
     <origin xyz="0 0 -0.28" rpy="0 0 0"/>
     <parent link="RR_thigh"/>
     <child link="RR_calf"/>
     <axis xyz="0 -1 0"/>
-    <limit  lower="0.536"  upper="2.775"  effort="160.0" velocity="15.0"/>
+    <limit  lower="0.525"  upper="2.765"  effort="136" velocity="14"/>
   </joint>
 
   <link name="RR_calf">
     <inertial>
       <origin
-        xyz="0.00439626398200205 -0.0122250244327461 -0.214276680367057"
+        xyz="0.00439655663996813 -0.0122246469258012 -0.21427110591431"
         rpy="0 0 0" />
       <mass
-        value="1.04301180268041" />
+        value="1.04303800470918" />
       <inertia
-        ixx="0.00822331897621462"
-        ixy="-2.27722808420971E-05"
-        ixz="2.91709929744536E-05"
-        iyy="0.00866932835989672"
-        iyz="-0.000205145438309947"
-        izz="0.000679927866024897" />
+        ixx="0.00822285774174486"
+        ixy="-2.27715239422818E-05"
+        ixz="2.91986547062659E-05"
+        iyy="0.00866886429244311"
+        iyz="-0.000205142635766689"
+        izz="0.000679922735361053" />
     </inertial>
-
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/RR_calf.STL"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RR_calf.STL"/>
       </geometry>
+      <material
+        name="">
+        <color rgba="1 1 1 1"/>
+      </material>
     </visual>
-
-
-
-
     <collision>
       <origin
-        xyz="-0.002 0 -0.05"
-        rpy="0 -0.3 0.0"/>
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <box size="0.01 0.026 0.12"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RR_calf.STL"/>
       </geometry>
     </collision>
-
-    <collision>
-      <origin
-        xyz="0.021 0 -0.11"
-        rpy="0 -0.055 0.0"/>
-      <geometry>
-        <box size="0.021 0.026 0.22"/>
-      </geometry>
-    </collision>
-
-    <collision>
-      <origin
-        xyz="0.002 0 -0.23"
-        rpy="0 0.47 0.0"/>
-      <geometry>
-        <box size="0.01 0.026 0.08"/>
-      </geometry>
-    </collision>
-
-    <collision>
-      <origin
-        xyz="0.028 0 -0.245"
-        rpy="0 0.19 0.0"/>
-      <geometry>
-        <box size="0.01 0.026 0.056"/>
-      </geometry>
-    </collision>
-
   </link>
   
-  <joint name="RR_wheel_motor" type="revolute">
+
+  <joint name="hr_wheel_joint" type="revolute">
     <parent link="RR_calf"/>
-    <child link="RR_wheel"/>
-    <origin xyz="0 -0.0676 -0.275" rpy="0 0 0"/>
+    <child link="hr_wheel"/>
+    <origin xyz="0 -0.0676 -0.27498" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
-    <limit lower="-999999" upper="999999" effort="14.0" velocity="65"/>
+    <limit lower="-999999" upper="999999" effort="20.0" velocity="65"/>
   </joint>
 
   <!-- Wheel link -->
-  <link name="RR_wheel">
+  <link name="hr_wheel">
     <inertial>
-      <origin xyz="0 -0.001393 0" rpy="0 0 0"/>
-      <mass value="0.998507"/>
+      <origin xyz="0 -0.00021552 0" rpy="0 0 0"/>
+      <mass value="0.85845"/>
       <inertia
-        ixx="0.00263190"
+        ixx="0.0024412"
         ixy="0"
         ixz="0"
-        iyy="0.00502601"
+        iyy="0.0046346"
         iyz="0"
-        izz="0.00263193"/>
+        izz="0.0024413"/>
     </inertial>
-    
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin  xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="../meshes/RR_wheel.STL"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RR_wheel.STL" />
       </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
     </visual>
-
-    <!-- continuous crown: r(y)=sqrt(R^2-y^2), R=0.095; center contacts first -->
     <collision>
-      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <cylinder radius="0.095" length="0.008"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RR_wheel.STL" />
       </geometry>
     </collision>
-    <collision>
-      <origin xyz="0 0.009 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09457" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 -0.009 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09457" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 0.018 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09328" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 -0.018 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09328" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 0.0488 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.045" length="0.0976"/>
-      </geometry>
-    </collision>
-
   </link>
 
   <!-- RL leg -->
-  <joint name="RL_hip_joint" type="revolute">
+  <joint name="leg3_hl_joint0" type="revolute">
     <origin xyz="-0.2755 0.085 0" rpy="0 0 0"/>
-    <parent link="trunk"/>
+    <parent link="base_link"/>
     <child link="RL_hip"/>
     <axis xyz="1 0 0"/>
     <limit lower="-0.698"  upper="0.698" effort="100.0"  velocity="20.0"/>
@@ -703,7 +559,7 @@
     <inertial>
       <origin xyz="0.00429 -0.01675 0.00083" rpy="0 0 0"/>
       <mass value="1.655"/>
-      <inertia
+      <inertia     
         ixx="0.002076985"
         ixy="0.000138579"
         ixz="-0.000006971"
@@ -711,36 +567,40 @@
         iyz="-0.000003867"
         izz="0.002516870"/>
     </inertial>
-
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/RL_hip.STL"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RL_hip.STL"/>
       </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1"/>
+      </material>
     </visual>
-
     <collision>
-      <origin xyz="0 0.0375 0" rpy="1.570795 0 0"/>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <cylinder length="0.175" radius="0.0625"/>
-        <!-- <mesh filename="./meshes/A01b/hl_abad.STL"/> -->
+        <mesh filename="package://quad_description/meshes/A01mw/RL_hip.STL"/>
       </geometry>
     </collision>
-
   </link>
   
-  <joint name="RL_thigh_joint" type="revolute">
+  <joint name="leg3_hl_joint1" type="revolute">
     <origin xyz="0 0.0905 0" rpy="0 0 0"/>
     <parent link="RL_hip"/>
     <child link="RL_thigh"/>
     <axis xyz="0 -1 0"/>
-    <limit lower="-3.054" upper="1.0" effort="100.0" velocity="20.0"/>
+    <limit lower="-3.05" upper="0.6981" effort="72" velocity="27"/>
   </joint>
 
   <link name="RL_thigh">
-
     <inertial>
-      <origin xyz="0.00549 -0.029449 -0.045721" rpy="0 0 0"/>
+      <origin xyz="-0.00549 -0.029449 -0.045721" rpy="0 0 0"/>
       <mass value="2.085"/>
       <inertia
         ixx="0.018499197"
@@ -750,159 +610,112 @@
         iyz="0.002889972"
         izz="0.003757909"/>
     </inertial>
-
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/RL_thigh.STL"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RL_thigh.STL"/>
       </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1"/>
+      </material>
     </visual>
-
     <collision>
-      <origin xyz="-0.01 0.01 -0.14" rpy="0 0 0"/>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <box size="0.07 0.04 0.28"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RL_thigh.STL"/>
       </geometry>
     </collision>
-
   </link>
   
-  <joint name="RL_calf_joint" type="revolute">
+  <joint name="leg3_hl_joint2" type="revolute">
     <origin xyz="0 0 -0.28" rpy="0 0 0"/>
     <parent link="RL_thigh"/>
     <child link="RL_calf"/>
     <axis xyz="0 -1 0"/>
-    <limit  lower="0.536"  upper="2.775"  effort="160.0" velocity="15.0"/>
+    <limit  lower="0.525"  upper="2.765"  effort="136" velocity="14"/>
   </joint>
 
   <link name="RL_calf">
     <inertial>
       <origin
-        xyz="0.00439655663996813 0.0122246469258012 -0.21427110591431"
+        xyz="0.00439626398200205 0.0122250244327461 -0.214276680367057"
         rpy="0 0 0" />
       <mass
-        value="1.04303800470918" />
+        value="1.04301180268041" />
       <inertia
-        ixx="0.00822285774174486"
-        ixy="2.27715239422818E-05"
-        ixz="2.91986547062659E-05"
-        iyy="0.00866886429244311"
-        iyz="0.000205142635766689"
-        izz="0.000679922735361053" />
+        ixx="0.00822331897621462"
+        ixy="2.27722808420971E-05"
+        ixz="2.91709929744536E-05"
+        iyy="0.00866932835989672"
+        iyz="0.000205145438309947"
+        izz="0.000679927866024897" />
     </inertial>
-
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/RL_calf.STL"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RL_calf.STL"/>
       </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1"/>
+      </material>
     </visual>
-
-
-
-
     <collision>
       <origin
-        xyz="-0.002 0 -0.05"
-        rpy="0 -0.3 0.0"/>
+        xyz="0 0 0"
+        rpy="0 0 0"/>
       <geometry>
-        <box size="0.01 0.026 0.12"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RL_calf.STL"/>
       </geometry>
     </collision>
-
-    <collision>
-      <origin
-        xyz="0.021 0 -0.11"
-        rpy="0 -0.055 0.0"/>
-      <geometry>
-        <box size="0.021 0.026 0.22"/>
-      </geometry>
-    </collision>
-
-    <collision>
-      <origin
-        xyz="0.002 0 -0.23"
-        rpy="0 0.47 0.0"/>
-      <geometry>
-        <box size="0.01 0.026 0.08"/>
-      </geometry>
-    </collision>
-
-    <collision>
-      <origin
-        xyz="0.028 0 -0.245"
-        rpy="0 0.19 0.0"/>
-      <geometry>
-        <box size="0.01 0.026 0.056"/>
-      </geometry>
-    </collision>
-
   </link>
   
-  <joint name="RL_wheel_motor" type="revolute">
+  <joint name="hl_wheel_joint" type="revolute">
     <parent link="RL_calf"/>
-    <child link="RL_wheel"/>
+    <child link="hl_wheel"/>
     <origin xyz="0 0.0676 -0.275" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
-    <limit lower="-999999" upper="999999" effort="14.0" velocity="65"/>
+    <limit lower="-999999" upper="999999" effort="20.0" velocity="65"/>
   </joint>
 
   <!-- Wheel link -->
-  <link name="RL_wheel">
+  <link name="hl_wheel">
     <inertial>
-      <origin xyz="0 0.001393 0" rpy="0 0 0"/>
-      <mass value="0.998507"/>
+      <origin xyz="0 0.00021552 0" rpy="0 0 0"/>
+      <mass value="0.85845"/>
       <inertia
-        ixx="0.00263190"
+        ixx="0.0024412"
         ixy="0"
         ixz="0"
-        iyy="0.00502601"
+        iyy="0.0046346"
         iyz="0"
-        izz="0.00263193"/>
+        izz="0.0024413"/>
     </inertial>
     
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin  xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="../meshes/RL_wheel.STL"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RL_wheel.STL" />
       </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
     </visual>
-
-    <!-- continuous crown: r(y)=sqrt(R^2-y^2), R=0.095; center contacts first -->
     <collision>
-      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <cylinder radius="0.095" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 0.009 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09457" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 -0.009 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09457" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 0.018 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09328" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 -0.018 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.09328" length="0.008"/>
-      </geometry>
-    </collision>
-    <collision>
-      <origin xyz="0 -0.0488 0" rpy="1.5708 0 0"/>
-      <geometry>
-        <cylinder radius="0.045" length="0.0976"/>
+        <mesh filename="package://quad_description/meshes/A01mw/RL_wheel.STL" />
       </geometry>
     </collision>
   </link>
