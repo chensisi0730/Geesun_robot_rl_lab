@@ -1009,21 +1009,23 @@ def _prepare_geesun_dog_urdf() -> None:
             content,
             flags=re.DOTALL,
         )
-        # effort/velocity limits -> vendor sheet D30W关节电气参数.xlsx (output side "输出端参数"):
-        # hip/thigh LS100_WLA/WLH 120 N*m / 40 rad/s, calf LS100_WLK 200 N*m / 20 rad/s,
-        # wheel LS75_WL 14 N*m / 65 rad/s. Covers both exports' native values
-        # (72/27, 136/14, 20/65 in the new one; 100/20, 160/15, 14/65 in the legacy one).
+        # effort/velocity limits -> the vendor URDF is the source of truth (project decision
+        # 2026-10-14): hip/thigh 72 N*m / 27 rad/s, calf 136 N*m / 14 rad/s, wheel 20 N*m /
+        # 65 rad/s. These regexes only NORMALIZE spelling variants across exports onto those
+        # URDF values (the legacy export and the new export's leg3_hl_joint0 typo carry
+        # 100/20, 160/15 or 14/65); they no longer inflate the limits to the vendor-sheet
+        # (xlsx) maxima.
         content = re.sub(
             r'effort="(?:100|72)(?:\.0)?"\s+velocity="(?:20|27)(?:\.0)?"',
-            'effort="120.0" velocity="40.0"',
+            'effort="72.0" velocity="27.0"',
             content,
         )
         content = re.sub(
             r'effort="(?:160|136)(?:\.0)?"\s+velocity="(?:15|14)(?:\.0)?"',
-            'effort="200.0" velocity="20.0"',
+            'effort="136.0" velocity="14.0"',
             content,
         )
-        content = re.sub(r'effort="20(?:\.0)?"\s+velocity="65(?:\.0)?"', 'effort="14.0" velocity="65.0"', content)
+        content = re.sub(r'effort="(?:20|14)(?:\.0)?"\s+velocity="65(?:\.0)?"', 'effort="20.0" velocity="65.0"', content)
         # trunk/base_link collision: the vendor export gives the chassis a full mesh hull (or a
         # 1.0 x 0.26 x 0.22 box in the legacy export) that SWALLOWS the hip and upper-thigh
         # volumes. Those grandparent-grandchild overlaps inject huge de-penetration torques
@@ -1177,10 +1179,10 @@ def ensure_geesun_dog_usd() -> str:
 # their own group driven as a pure velocity servo (stiffness=0 -> tau = damping * (v_des - v)),
 # because a position drive on a continuous wheel joint would fight free rolling.
 if GEESUN_DOG_WHEEL_LEG:
-    # lingsi_d30w (D30W): vendor-specified actuators, values from D30W关节电气参数.xlsx via the
-    # self-contained UnitreeActuatorCfg_D30W (isolated from GO2/dog1). hip/thigh = LS100_WLA/WLH
-    # (120 N*m / 40 rad/s), calf = LS100_WLK (200 N*m / 20 rad/s), wheels = LS75_WL (14 N*m /
-    # 65 rad/s). The wheels are pure velocity servos (stiffness=0 -> tau = damping * (v_des - v),
+    # lingsi_d30w (D30W): effort/velocity from the vendor URDF (source of truth, 2026-10-14)
+    # via the self-contained UnitreeActuatorCfg_D30W (isolated from GO2/dog1). hip/thigh
+    # 72 N*m / 27 rad/s (class default), calf 136 N*m / 14 rad/s, wheels 20 N*m / 65 rad/s.
+    # The wheels are pure velocity servos (stiffness=0 -> tau = damping * (v_des - v),
     # damping = vendor KD max 5) so a position drive cannot fight free rolling.
     _GEESUN_DOG_ACTUATORS = {
         "GeEsunDogHipThigh": unitree_actuators.UnitreeActuatorCfg_D30W(
@@ -1188,21 +1190,21 @@ if GEESUN_DOG_WHEEL_LEG:
         ),
         "GeEsunDogCalf": unitree_actuators.UnitreeActuatorCfg_D30W(
             joint_names_expr=["joint_(fr|fl|hr|hl)_calf"],
-            X1=10.0,
-            X2=20.0,
-            Y1=200.0,
-            Y2=200.0,
+            X1=7.0,
+            X2=14.0,
+            Y1=136.0,
+            Y2=136.0,
         ),
         "GeEsunDogWheels": unitree_actuators.UnitreeActuatorCfg_D30W(
             joint_names_expr=list(GEESUN_DOG_WHEEL_JOINT_NAMES),
             X1=32.5,
             X2=65.0,
-            Y1=14.0,
-            Y2=14.0,
+            Y1=20.0,
+            Y2=20.0,
             stiffness=0.0,
             # velocity-servo gain. The vendor KD max (5) is an upper bound; as a pure velocity
             # damper it sits deep in the explicit-Euler negative-damping zone (b*dt/J > 2 ->
-            # bang-bang at the +-14 N*m limit that kicks the legs apart; measured: wheels at
+            # bang-bang at the +-20 N*m limit that kicks the legs apart; measured: wheels at
             # +-20 rad/s within 0.5 s). b = 1 + armature 0.01 (rotor + wheel hub inertia
             # reflected to the joint, not given by the vendor sheet) gives b*dt/J_eff = 0.33
             # (6x margin). Do NOT convert this group to a position servo: kp=500 on the same

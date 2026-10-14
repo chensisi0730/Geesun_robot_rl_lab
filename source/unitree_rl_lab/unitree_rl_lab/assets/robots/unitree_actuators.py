@@ -239,22 +239,21 @@ class UnitreeActuatorCfg_W4010_25(UnitreeActuatorCfg):
 class UnitreeActuatorCfg_D30W(UnitreeActuatorCfg):
     """Self-contained actuator + PD parameter set for the lingsi_d30w wheel-legged variant.
 
-    Values from the vendor sheet `geesun_dog_urdf/geesun-dog/lingsi_d30w/urdf/D30W关节电气参数.xlsx`
-    (output-side parameters "输出端参数"): LS100_WLA/WLH (hip/thigh) 120 N*m / 40 rad/s,
-    LS100_WLK (calf) 200 N*m / 20 rad/s, LS75_WL (wheel) 14 N*m / 65 rad/s, KP max 500 /
-    KD max 5 (PD-gain upper bounds, output-side; the actual gains below are chosen inside
-    this envelope for numerical stability - see the fields). The sheet gives max ratings but
-    no torque-speed knee point, so X1 is placed at half the max speed (full torque below X1,
-    linear derating to X2) - conservative. Defaults below = LS100_WLH (thigh/hip); the calf
-    and wheel groups override X/Y at instance level in unitree.py. Isolated from GO2/dog1
-    parameter sets.
+    effort/velocity limits from the vendor URDF ``geesun_dog_urdf/geesun-dog/lingsi_d30w/urdf/
+    lingsi_d30w.urdf`` (project decision 2026-10-14: the URDF is the source of truth, NOT the
+    vendor sheet ``D30W关节电气参数.xlsx`` which rates the same motors at 120/40, 200/20,
+    14/65 output-side): hip/thigh 72 N*m / 27 rad/s, calf 136 N*m / 14 rad/s, wheel 20 N*m /
+    65 rad/s. The URDF gives max ratings but no torque-speed knee point, so X1 is placed at
+    half the max speed (full torque below X1, linear derating to X2) - conservative.
+    Defaults below = hip/thigh; the calf and wheel groups override X/Y at instance level in
+    unitree.py. Isolated from GO2/dog1 parameter sets.
     """
 
-    # torque-speed curve (N*m, rad/s) - LS100_WLA/WLH default
-    X1 = 20.0
-    X2 = 40.0
-    Y1 = 120.0
-    Y2 = 120.0
+    # torque-speed curve (N*m, rad/s) - hip/thigh default (URDF effort=72, velocity=27)
+    X1 = 13.5
+    X2 = 27.0
+    Y1 = 72.0
+    Y2 = 72.0
     # friction model (not specified by the vendor sheet)
     Fs = 0.0
     Fd = 0.0
