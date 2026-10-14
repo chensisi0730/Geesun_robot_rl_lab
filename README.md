@@ -128,7 +128,7 @@
 
     conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
         --task Unitree-GeesunDog-LingsiD30W-Velocity    --num_envs 22000 \
-        --resume --load_run 2026-10-12_20-24-42 2>&1 | tee /tmp/train_GeesunDog_resume.log 
+        --resume --load_run 2026-10-14_08-47-04 2>&1 | tee /tmp/train_GeesunDog_resume.log 
             
     ```
 
@@ -195,7 +195,7 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py --task U
 
 # GeesunDog（Geesun 狗，dog1）关节力矩统计（硬件选型参考），换 --task 即可
 conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
-    --task Unitree-GeesunDog-Velocity --terrain flat --steps 1000
+    --task Unitree-GeesunDog-Dog1-Velocity --terrain flat --steps 1000
 ```
 
 > **GeesunDog 硬件选型力矩测试（2026-10-12 起）：** `scripts/torque_test_when_done.sh <train_pid>`
@@ -303,7 +303,7 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
     --steps 1000
 
 conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
-    --task Unitree-GeesunDog-Velocity \
+    --task Unitree-GeesunDog-Dog1-Velocity \
     --terrain complex \
     --steps 1000    
 
@@ -428,7 +428,7 @@ python scripts/geesun_dog/move_geesun_dog.py --headless --num_steps 600 \
 
 **验证要点：**
 
-1. `./unitree_rl_lab.sh -l` 能查到已注册任务 `Unitree-GeesunDog-Velocity`（位于 `tasks/locomotion/robots/geesun_dog/`，复用 Go2 的速度跟踪任务结构）。
+1. `./unitree_rl_lab.sh -l` 能查到已注册任务 `Unitree-GeesunDog-Dog1-Velocity` 与 `Unitree-GeesunDog-LingsiD30W-Velocity`（位于 `tasks/locomotion/robots/geesun_dog/dog1|lingsi_d30w/`，复用 Go2 的速度跟踪任务结构；旧入口 `Unitree-GeesunDog-Velocity` 已移除）。
 2. 控制台打印 `Using converted USD: /tmp/IsaacLab/geesun_dog/dog1.usd` 和 `Loaded robot joints: [12 个关节名]`。
 3. 控制台每 100 步打印 `[step N] joint_pos (rad):`，12 个关节值偏离站姿基准角（PD 跟踪滞后）且对角腿成对一致（fr≈hl、fl≈hr）。注意：默认 1.5 Hz 下每 100 步（2.0 s）恰为整数倍周期，稳态后相邻打印落在同一相位、数值相同属正常现象（不是卡死）；想从日志直接看到振荡，可改用非整周期频率（如 `--gait_freq 1.7`）或观察图形界面。
 4. 图形界面中机器人悬浮在离地约 1 m 处（基座被固定以便四条腿自由摆动），四条腿原地小跑。
