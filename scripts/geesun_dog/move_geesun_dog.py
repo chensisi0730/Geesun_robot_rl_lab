@@ -10,7 +10,11 @@ in a trot-like gait (diagonal legs in phase).
     # Usage (inside conda env with Isaac Lab installed)
     conda run -n env_isaaclab_sim51  python scripts/geesun_dog/move_geesun_dog.py --num_steps 1500 --calf_base -1.1  --calf_amp_deg 40   --variant dog1
 
-        conda run -n env_isaaclab_sim51  python scripts/geesun_dog/move_geesun_dog.py --num_steps 1500 --calf_base -1.1  --calf_amp_deg 40  --variant lingsi_d30w  --wheel_speed 10
+    # lingsi_d30w (wheel-legged): its calf limit is [0.536, 2.775] (NOT dog1's [-1.885, 0]),
+    # so use the variant stance calf base 0.8 with a small amplitude, otherwise the calf
+    # target stays clamped at the lower limit the whole run and the legs flail
+    # (README, lingsi_d30w 基础运动):
+    conda run -n env_isaaclab_sim51  python scripts/geesun_dog/move_geesun_dog.py --num_steps 1500 --calf_base 0.8 --calf_amp_deg 15 --variant lingsi_d30w  --wheel_speed 10
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -38,8 +42,8 @@ parser.add_argument(
 parser.add_argument("--amp_deg", type=float, default=25.0, help="Joint oscillation amplitude in degrees")
 parser.add_argument("--root_z", type=float, default=1.0, help="Initial root height (m); 0.17 puts the feet on the ground (measured stance height 0.166 m); the default 1.0 is for the pinned air-trot demo")
 parser.add_argument("--no_pin_root", action="store_true", help="Do not re-write the root state every step (let gravity/dynamics act)")
-parser.add_argument("--rear_thigh", type=float, default=1.0, help="Standing-pose base angle for rear thigh joints (rad); 1.0 = mirrored stance matching GEESUN_DOG_CFG, -1.0 = legacy sitting stance (ablation)")
-parser.add_argument("--calf_base", type=float, default=-1.4, help="Standing-pose base angle for all calf joints (rad); more negative flattens the foot plate under the knee")
+parser.add_argument("--rear_thigh", type=float, default=None, help="Standing-pose base angle for rear thigh joints (rad); default = the variant's GEESUN_DOG_VARIANT_SPEC stance (dog1: 1.0). 1.0 = mirrored stance matching GEESUN_DOG_CFG, -1.0 = legacy sitting stance (ablation)")
+parser.add_argument("--calf_base", type=float, default=None, help="Standing-pose base angle for all calf joints (rad); default = the variant's GEESUN_DOG_VARIANT_SPEC stance (dog1: -1.4). More negative flattens the foot plate under the knee")
 parser.add_argument("--calf_amp_deg", type=float, default=0.0, help="Oscillation amplitude (deg) for calf joints; 0 = follow --amp_deg. dog921 calf limit is [-1.885, 0], so at --calf_base -1.4 the max symmetric amplitude is only ~27.8 deg; use e.g. --calf_base -1.1 --calf_amp_deg 40 for a visibly larger calf swing (range [-1.798, -0.402], no limit contact)")
 parser.add_argument("--settle_steps", type=int, default=100, help="In --no_pin_root mode: hold the root at --root_z for this many steps (lets the PD settle into the stance) before releasing it")
 parser.add_argument("--no_self_collision", action="store_true", help="Disable articulation self-collisions (the degenerate dog921 meshes can pinch the legs)")
@@ -72,6 +76,7 @@ os.environ["GEESUN_DOG_VARIANT"] = args_cli.variant
 print(f"Geesun variant: {args_cli.variant}", flush=True)
 
 from unitree_rl_lab.assets.robots.unitree import GEESUN_DOG_CFG as ROBOT_CFG
+from unitree_rl_lab.assets.robots.unitree import GEESUN_DOG_VARIANT_SPEC
 from unitree_rl_lab.assets.robots.unitree import ensure_geesun_dog_usd
 
 
@@ -137,17 +142,23 @@ def main():
     print("Loaded robot joints:", robot.joint_names, flush=True)
 
     if args_cli.stiffness > 0 or args_cli.damping > 0:
-        act = robot.actuators["GeEsunDog"]
-        if args_cli.stiffness > 0:
-            act.stiffness = (
-                torch.full_like(act.stiffness, args_cli.stiffness)
-                if torch.is_tensor(act.stiffness)
-                else args_cli.stiffness
-            )
-        if args_cli.damping > 0:
-            act.damping = (
-                torch.full_like(act.damping, args_cli.damping) if torch.is_tensor(act.damping) else args_cli.damping
-            )
+        # apply the override to the position-driven Geesun actuator groups (dog1 has a single
+        # "GeEsunDog" group; the wheel-legged lingsi_d30w has GeEsunDogHipThigh/Calf). The
+        # wheel velocity-servo group (GeEsunDogWheels) is skipped: its damping is a velocity
+        # gain with its own stability limit, not part of the position-PD override.
+        for name, act in robot.actuators.items():
+            if not name.startswith("GeEsunDog") or "Wheel" in name:
+                continue
+            if args_cli.stiffness > 0:
+                act.stiffness = (
+                    torch.full_like(act.stiffness, args_cli.stiffness)
+                    if torch.is_tensor(act.stiffness)
+                    else args_cli.stiffness
+                )
+            if args_cli.damping > 0:
+                act.damping = (
+                    torch.full_like(act.damping, args_cli.damping) if torch.is_tensor(act.damping) else args_cli.damping
+                )
         print(
             f"PD override: k={args_cli.stiffness if args_cli.stiffness > 0 else 'cfg'}, "
             f"b={args_cli.damping if args_cli.damping > 0 else 'cfg'}",
@@ -159,21 +170,30 @@ def main():
     freq = args_cli.gait_freq  # Hz
     w = 2.0 * math.pi * freq
 
-    # standing pose base angles (rad), matching GEESUN_DOG_CFG init_state
+    # standing pose base angles (rad), matching GEESUN_DOG_CFG init_state (per variant:
+    # GEESUN_DOG_VARIANT_SPEC["default_joint_pos"]; hip joints default to 0.0)
     # trot gait: front-left & rear-right in phase, front-right & rear-left in opposite phase
+    stance = dict(GEESUN_DOG_VARIANT_SPEC["default_joint_pos"])
+    if args_cli.rear_thigh is not None:
+        stance["joint_hr_thigh"] = args_cli.rear_thigh
+        stance["joint_hl_thigh"] = args_cli.rear_thigh
+    if args_cli.calf_base is not None:
+        for n in stance:
+            if n.endswith("_calf"):
+                stance[n] = args_cli.calf_base
     base = {
         "joint_fr_hip": 0.0,
         "joint_fl_hip": 0.0,
         "joint_hr_hip": 0.0,
         "joint_hl_hip": 0.0,
-        "joint_fr_thigh": 1.0,
-        "joint_fl_thigh": 1.0,
-        "joint_hr_thigh": args_cli.rear_thigh,
-        "joint_hl_thigh": args_cli.rear_thigh,
-        "joint_fr_calf": args_cli.calf_base,
-        "joint_fl_calf": args_cli.calf_base,
-        "joint_hr_calf": args_cli.calf_base,
-        "joint_hl_calf": args_cli.calf_base,
+        "joint_fr_thigh": stance["joint_fr_thigh"],
+        "joint_fl_thigh": stance["joint_fl_thigh"],
+        "joint_hr_thigh": stance["joint_hr_thigh"],
+        "joint_hl_thigh": stance["joint_hl_thigh"],
+        "joint_fr_calf": stance.get("joint_fr_calf", 0.0),
+        "joint_fl_calf": stance.get("joint_fl_calf", 0.0),
+        "joint_hr_calf": stance.get("joint_hr_calf", 0.0),
+        "joint_hl_calf": stance.get("joint_hl_calf", 0.0),
     }
     # hip swing amplitude (smaller than thigh/calf); calf amplitude can be overridden with --calf_amp_deg
     calf_amp = math.radians(args_cli.calf_amp_deg) if args_cli.calf_amp_deg > 0 else amp
@@ -208,10 +228,11 @@ def main():
 
     actions = robot.data.default_joint_pos.clone()  # (num_envs, num_joints), standing pose
     default_root = robot.data.default_root_state.clone()
-    # NOTE: z-down variants (e.g. lingsi_d30w, whose URDF header reads "x=front, y=left, z=down")
-    # are already flipped upright by GEESUN_DOG_CFG.init_state.rot (180 deg about x, wheels below the
-    # base), so no extra rotation belongs here. The model's native left/right ends up mirrored by that
-    # flip (the fl leg renders on the right); the diagonal trot phase structure is unaffected.
+    # NOTE: z-down variants are flipped upright by GEESUN_DOG_CFG.init_state.rot (180 deg about x,
+    # wheels below the base), so no extra rotation belongs here; the flip mirrors the model's native
+    # left/right (the fl leg renders on the right), the diagonal trot phase structure is unaffected.
+    # (The old lingsi_d30w STEP-generated URDF was z-down; since 2026-10-13 the vendor URDF is z-up
+    # and the flip no longer applies to it - see GEESUN_DOG_VARIANT_SPECS["lingsi_d30w"]["z_down"].)
     # raise the base well above the ground (leg reach is ~0.7 m) so the swinging legs
     # do not hit the ground and jam the joints
     default_root[0, 2] = args_cli.root_z
@@ -242,7 +263,7 @@ def main():
         root_pos = robot.data.root_state_w[0, :3].cpu().numpy()
         sim.set_camera_view(root_pos + [2.5, 1.5, 0.8], root_pos)
 
-        if step_idx % 100 == 0:
+        if step_idx % int(os.environ.get("MOVE_PRINT_EVERY", "100")) == 0:
             pos = robot.data.joint_pos[0].cpu().tolist()
             root = robot.data.root_state_w[0, :3].cpu().tolist()
             print(f"[step {step_idx}] root=({root[0]:.3f},{root[1]:.3f},{root[2]:.3f}) joint_pos (rad):", ["%.3f" % p for p in pos], flush=True)

@@ -1,10 +1,17 @@
-"""Velocity-tracking locomotion task for the Geesun dog (dog1).
+"""Velocity-tracking locomotion task for the Geesun dog **lingsi_d30w** variant (D30W wheel-legged).
+
+STANDALONE TASK DEFINITION: this file is self-contained for lingsi_d30w and deliberately shares
+no task-config code with the ``dog1`` task, so the two campaigns can be tuned independently
+(and auto-tuned concurrently) without cross-contaminating each other's reward / curriculum knobs.
+For a dog1 <-> lingsi_d30w ablation, diff the two files: the asset / foot / action differences
+below are the only intended deltas.
 
 Adapted from the Go2 task. Main differences:
 - robot is spawned from ``GEESUN_DOG_CFG`` (URDF converted to USD on demand)
 - base body is named ``base_link`` (Go2 uses ``base``)
-- the URDF has no dedicated foot links, so the calf links act as feet for
-  contact-based reward terms
+- the URDF has no dedicated foot links; the wheel links are the feet and the calves must stay
+  clear of the ground
+- 4 wheel joints are velocity-servo driven on top of the 12 position-controlled leg joints
 """
 
 import math
@@ -28,20 +35,24 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-from unitree_rl_lab.assets.robots.unitree import GEESUN_DOG_CFG as ROBOT_CFG
-from unitree_rl_lab.assets.robots.unitree import GEESUN_DOG_VARIANT_SPEC
-from unitree_rl_lab.assets.robots.unitree import GEESUN_DOG_WHEEL_JOINT_NAMES
-from unitree_rl_lab.assets.robots.unitree import GEESUN_DOG_WHEEL_LEG
-from unitree_rl_lab.assets.robots.unitree import ensure_geesun_dog_usd
-from unitree_rl_lab.tasks.locomotion import mdp
+# Pin the asset variant before importing the shared asset module (that module freezes the
+# variant into module-level constants on first import). This task is lingsi_d30w regardless of
+# the ambient GEESUN_DOG_VARIANT, so an unset/mis-set env var can never train the wrong robot.
+os.environ["GEESUN_DOG_VARIANT"] = "lingsi_d30w"
 
-# Links that touch the ground. dog1 has foot plates at the calf tips; the wheel-legged lingsi_d30w
-# rolls on its wheels, so the wheel links are the feet and the calves must stay clear of the ground.
-FOOT_BODY_NAMES = GEESUN_DOG_VARIANT_SPEC["foot_body"]
-# The position-controlled leg joints. On wheel-legged variants the wheel joints are velocity-servo
-# driven and excluded, otherwise the joint-space penalties (velocity / acceleration / torque /
-# position deviation) would directly fight free rolling.
-LEG_JOINT_NAMES = list(GEESUN_DOG_VARIANT_SPEC["leg_joints"])
+from unitree_rl_lab.assets.robots.unitree import GEESUN_DOG_CFG as ROBOT_CFG  # noqa: E402
+from unitree_rl_lab.assets.robots.unitree import ensure_geesun_dog_usd  # noqa: E402
+from unitree_rl_lab.tasks.locomotion import mdp  # noqa: E402
+
+# -- lingsi_d30w traits, hard-coded on purpose (cf. GEESUN_DOG_VARIANT_SPECS["lingsi_d30w"]) --
+# Links that touch the ground: lingsi_d30w rolls on its wheels, so the wheel links are the feet
+# and the calves (which sit right above the wheels) must stay clear of the ground.
+FOOT_BODY_NAMES = ".*_wheel"
+# Position-controlled leg joints. The wheel joints are velocity-servo driven and deliberately
+# excluded from the joint-space penalties (velocity / acceleration / torque / position
+# deviation), which would otherwise directly fight free rolling.
+LEG_JOINT_NAMES = ["joint_(fr|fl|hr|hl)_(hip|thigh|calf)"]
+WHEEL_JOINT_NAMES = ["joint_(fr|fl|hr|hl)_wheel"]
 
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
@@ -55,6 +66,21 @@ COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     use_cache=False,
     sub_terrains={
         "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.1),
+        # Gentle curriculum stage (2026-10-13, remediation plan 1+2+3 after the 14700-iter
+        # collapse): light random_rough only (noise 0.01-0.03 m), stairs stay out for now -
+        # re-enable (commented below) once walking is stable here. Commands start at the
+        # cfg's +-0.1 m/s and widen via lin_vel_cmd_levels. Fresh (non-resume) training.
+        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
+            proportion=0.2, noise_range=(0.01, 0.03), noise_step=0.01, border_width=0.25
+        ),
+        # "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+        #     proportion=0.2,
+        #     step_height_range=(0.05, 0.23),
+        #     step_width=0.3,
+        #     platform_width=3.0,
+        #     border_width=1.0,
+        #     holes=False,
+        # ),
     },
 )
 
@@ -198,7 +224,11 @@ class CommandsCfg:
 
 @configclass
 class ActionsCfg:
-    """Action specifications for the MDP."""
+    """Action specifications for the MDP.
+
+    lingsi_d30w is wheel-legged: 12 leg joints position-controlled + 4 wheel joints
+    velocity-servo driven.
+    """
 
     JointPositionAction = mdp.JointPositionActionCfg(
         asset_name="robot",
@@ -207,24 +237,14 @@ class ActionsCfg:
         use_default_offset=True,
         clip={".*": (-100.0, 100.0)},
     )
-
-
-@configclass
-class WheelLegActionsCfg(ActionsCfg):
-    """Adds the wheel velocity servo on top of the leg position control."""
-
     WheelVelocityAction = mdp.JointVelocityActionCfg(
         asset_name="robot",
-        joint_names=GEESUN_DOG_WHEEL_JOINT_NAMES,
+        joint_names=WHEEL_JOINT_NAMES,
         # 0.25 rad/s per unit action would crawl; 20 rad/s per unit covers the 25 rad/s URDF limit
         scale=20.0,
         use_default_offset=True,
         clip={".*": (-25.0, 25.0)},
     )
-
-
-if GEESUN_DOG_WHEEL_LEG:
-    ActionsCfg = WheelLegActionsCfg
 
 
 @configclass
@@ -367,16 +387,14 @@ class RewardsCfg:
     # )
 
     # -- other
-    # on the wheel-legged variant the calf links sit right above the wheels and must not scrape the
-    # ground, so they join the hips and thighs as undesired-contact bodies
+    # the calf links sit right above the wheels and must not scrape the ground, so they join
+    # the hips and thighs as undesired-contact bodies
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         weight=-1,
         params={
             "threshold": 1,
-            "sensor_cfg": SceneEntityCfg(
-                "contact_forces", body_names=[".*_hip", ".*_thigh"] + ([".*_calf"] if GEESUN_DOG_WHEEL_LEG else [])
-            ),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_hip", ".*_thigh", ".*_calf"]),
         },
     )
 
@@ -395,10 +413,35 @@ class TerminationsCfg:
 
 @configclass
 class CurriculumCfg:
-    """Curriculum terms for the MDP."""
+    """Curriculum terms for the MDP.
 
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
-    lin_vel_cmd_levels = CurrTerm(mdp.lin_vel_cmd_levels)
+    Go2 dual-curriculum strategy (adopted 2026-10-13): terrain levels and velocity-command
+    ranges advance *in sync* - terrain_levels_vel_strict gates terrain difficulty on survival
+    + tracking with hysteresis, gated_lin_vel_cmd_levels widens the x/y and yaw command ranges
+    independently on success rate + tracking error. This replaces the earlier one-sided pair
+    (terrain_levels_vel + non-gated lin_vel_cmd_levels) that let the command range run ahead
+    of terrain competence during the 2026-10-12 collapse.
+    """
+
+    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_strict)
+    terrain_performance_by_type = CurrTerm(func=mdp.terrain_performance_by_type)
+    lin_vel_cmd_levels = CurrTerm(
+        func=mdp.gated_lin_vel_cmd_levels,
+        params={
+            # lingsi_d30w campaign state, under its own experiment_name dir so the dog1
+            # campaign can never cross-pollute this command-range state
+            "state_file": "logs/rsl_rl/unitree_geesun_lingsi_d30w/curriculum_state.json",
+            "lin_increment": 0.05,
+            "yaw_increment": 0.1,
+            "success_xy": 0.25,
+            "success_yaw": 0.35,
+            "min_success_rate": 0.90,
+            "min_env_steps": 12000,
+            "min_episodes": 4000,
+            "hold": 2,
+        },
+    )
+    command_ranges = CurrTerm(func=mdp.velocity_command_ranges)
 
 
 @configclass
@@ -421,11 +464,7 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         """Post initialization."""
         # make sure the converted USD asset exists before the scene spawns the robot
         ensure_geesun_dog_usd()
-        print(
-            f"Geesun variant: {os.environ.get('GEESUN_DOG_VARIANT', 'dog1')} "
-            f"(wheel_leg={GEESUN_DOG_WHEEL_LEG}, feet='{FOOT_BODY_NAMES}')",
-            flush=True,
-        )
+        print(f"Geesun task: lingsi_d30w (wheel-legged, feet='{FOOT_BODY_NAMES}')", flush=True)
 
         # general settings
         self.decimation = 4

@@ -14,18 +14,20 @@ cd "$(dirname "$0")/.."
 PY=/home/css/miniconda3/envs/env_isaaclab_sim51/bin/python
 
 # --- campaign: GeesunDog dog1, flat terrain only (velocity_env_cfg sub_terrains = flat) ---
+# GEESUN_DOG_VARIANT is informational only - the dog1 task pins its own asset variant.
 export GEESUN_DOG_VARIANT=dog1
-export MON_RUNS_GLOB="unitree_geesun_dog*/*"
-export MON_TASK="Unitree-GeesunDog-Velocity"
+export MON_RUNS_GLOB="unitree_geesun_dog1/*"
+export MON_TASK="Unitree-GeesunDog-Dog1-Velocity"
 export MON_NUM_ENVS=24096
 export MON_LOG_PREFIX="/tmp/train_dog_v"
 export MON_RESUME_LOG="/tmp/train_dog_auto.log"
-export MON_TRAIN_PATTERN='train\.py.*Unitree-GeesunDog-Velocity'
+export MON_TRAIN_PATTERN='train\.py.*Unitree-GeesunDog-Dog1-Velocity'
 export MON_DIR="outputs/monitor_dog"
 export AUTOTUNE_DIR="outputs/autotune_dog"
-# autotune knobs must edit the GeesunDog env cfg and the GeesunDog PPO class, not Go2's
-export AUTOTUNE_ENV_FILE="source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/geesun_dog/velocity_env_cfg.py"
-export AUTOTUNE_PPO_SCOPE="class UnitreeGeesunDogPPORunnerCfg"
+# autotune knobs edit the dog1 task's own env cfg + PPO class (dedicated to this variant, not
+# shared with lingsi_d30w or Go2), so this campaign can auto-tune concurrently with the others.
+export AUTOTUNE_ENV_FILE="source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/geesun_dog/dog1/velocity_env_cfg.py"
+export AUTOTUNE_PPO_SCOPE="class UnitreeGeesunDogDog1PPORunnerCfg"
 
 mkdir -p "$MON_DIR"
 while true; do

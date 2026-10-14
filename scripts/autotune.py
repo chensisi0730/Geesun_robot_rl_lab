@@ -29,7 +29,10 @@ Safety
 * Global cap ``MAX_ACTIONS`` and per-knob budgets; ``MIN_START_ITERS`` /
   ``MIN_ITERS_BETWEEN_ACTIONS`` / ``MIN_SECONDS_BETWEEN_ACTIONS`` prevent acting on
   startup transients or thrashing. Iteration cooldowns are run-local because fresh runs
-  reset their TensorBoard step to zero.
+  reset their TensorBoard step to zero. The budgets only bound the non-destructive
+  plateau/learning-pressure rules; degradation-class rules (value divergence, curve
+  degradation, rising falls) stay actionable after the budget is spent, bounded by the knob
+  lo/hi limits, the confirm gate and the cooldowns.
 * Edits are scoped to the class/section they belong to and are rejected if the file no
   longer compiles. Any edit/compile/launch failure restores the source backup and attempts
   to resume the stopped run from its latest checkpoint.
@@ -55,17 +58,21 @@ import tb_curves as tbc
 REPO = Path(__file__).resolve().parents[1]
 RUNS_ROOT = REPO / "logs" / "rsl_rl"
 # Follow whichever Go2 experiment is live (velocity, _ht ablation variants, ...).
-RUNS_GLOB = "unitree_go2_velocity*/*"
-AUTODIR = REPO / "outputs" / "autotune"
+# Campaign-specific constants are overridable through the environment (the monitor passes
+# its own environment through when it invokes this script as a subprocess), so one autotune
+# code base serves several campaigns (Go2 defaults; GeesunDog: scripts/monitor_tb_check_dog.sh).
+RUNS_GLOB = os.environ.get("MON_RUNS_GLOB", "unitree_go2_velocity*/*")
+AUTODIR = Path(os.environ.get("AUTOTUNE_DIR", str(REPO / "outputs" / "autotune")))
 BACKUP_DIR = AUTODIR / "backups"
 LEDGER = AUTODIR / "ledger.jsonl"
 STATE_PATH = AUTODIR / "state.json"
 DISABLE_FILE = AUTODIR / "DISABLED"
 
 PY = sys.executable
-TASK = "Unitree-Go2-Velocity"
-NUM_ENVS = 18000  # aligned with the manually launched runs since 2026-09-24
-TRAIN_PATTERN = r"train\.py.*Unitree-Go2-Velocity"
+TASK = os.environ.get("MON_TASK", "Unitree-Go2-Velocity")
+NUM_ENVS = int(os.environ.get("MON_NUM_ENVS", "18000"))  # aligned with the manually launched runs since 2026-09-24
+TRAIN_PATTERN = os.environ.get("MON_TRAIN_PATTERN", r"train\.py.*Unitree-Go2-Velocity")
+LOG_PREFIX = os.environ.get("MON_LOG_PREFIX", "/tmp/train_go2_v")
 ISAACLAB_PATH = "/home/css/work/unitree/rl/unitree_Robert/isaaclab/IsaacLab"
 PROXY = "http://127.0.0.1:7897"
 
@@ -76,8 +83,11 @@ PROXY = "http://127.0.0.1:7897"
 # Edit/add entries here (and the rules in `decide`) to change the tuning policy.
 # ---------------------------------------------------------------------------
 PPO_FILE = "source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/agents/rsl_rl_ppo_cfg.py"
-ENV_FILE = "source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/go2/velocity_env_cfg.py"
-PPO_SCOPE = "class UnitreeGo2PPORunnerCfg"
+ENV_FILE = os.environ.get(
+    "AUTOTUNE_ENV_FILE",
+    "source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/go2/velocity_env_cfg.py",
+)
+PPO_SCOPE = os.environ.get("AUTOTUNE_PPO_SCOPE", "class UnitreeGo2PPORunnerCfg")
 
 KNOBS: dict[str, dict] = {
     # NOTE: patterns are line-anchored (^ + re.MULTILINE) so they never match the example
@@ -155,7 +165,7 @@ WINDOW = 400                  # iterations used for trend/plateau detection
 MIN_START_ITERS = 1500        # never act before this many iterations
 MIN_ITERS_BETWEEN_ACTIONS = 600
 MIN_SECONDS_BETWEEN_ACTIONS = 3 * 60 * 60
-MAX_ACTIONS = 16              # global cap across the whole campaign
+MAX_ACTIONS = 16              # global cap across the whole campaign (normal-class rules only)
 
 # A single noisy scalar must never restart an expensive run. Degradation requires either
 # reward to fall together with another adverse curve, or at least two non-reward curves to
@@ -386,13 +396,25 @@ def decide(f: dict, state: dict):
     # Budgets were raised for the two knobs that carry degradation responses after
     # 2026-09-24..09-30: their budgets ran out and the auto-tuner silently lost the ability to
     # act on bad_orientation / err_yaw degradation (ledger gap 09-24 -> 09-29).
+    # 2026-10-10: degradation-class rules ("diverge"/"degrade" below) are additionally EXEMPT
+    # from the per-knob budget and from the global MAX_ACTIONS cap (see cooldown_reason) -
+    # once those budgets are spent the campaign must still respond to a worsening curve
+    # (stop -> edit one knob -> relaunch). Such actions stay bounded by the knob lo/hi limits,
+    # the confirm gate and the normal cooldowns. "normal" rules (plateau / learning pressure)
+    # keep their budgets so they cannot edit code forever.
     blocked: list[str] = []
 
-    def pick(knob: str, reason: str, budget: int):
-        if _used(state, knob) >= budget:
+    def pick(knob: str, reason: str, budget: int, exempt: bool = False):
+        if not exempt and _used(state, knob) >= budget:
             blocked.append(f"{knob} {_used(state, knob)}/{budget}")
             return None
-        old = read_knob(knob)
+        try:
+            old = read_knob(knob)
+        except Exception as exc:
+            # Knob not present in this campaign's config (e.g. GeesunDog has no
+            # lin_vel_cmd_levels curriculum knobs) - skip it instead of aborting the pass.
+            blocked.append(f"{knob} unavailable ({exc})")
+            return None
         new = _new_value(KNOBS[knob], old)
         if abs(new - old) < 1e-12:
             return None
@@ -400,38 +422,41 @@ def decide(f: dict, state: dict):
 
     # Learning-pressure rules additionally require plateau + unfinished curriculum, so a
     # healthy converged run (high noise is not needed once everything is maxed) is left alone.
-    # The 5th tuple field marks degradation-class rules: those need CONFIRM_CHECKS consecutive
-    # observations (see the confirmation gate in main) because their action stops + restarts
-    # training and curve dips may recover on their own.
+    # The 5th tuple field is the rule class:
+    #   "diverge" - value-function divergence (budget-exempt, no confirm gate: it already
+    #               needs two consecutive elevated windows / the monitor's --diverged flag);
+    #   "degrade" - curve degradation / rising falls (budget-exempt, needs CONFIRM_CHECKS
+    #               consecutive observations before stopping + restarting training);
+    #   "normal"  - plateau / learning pressure (bounded by the per-knob budget).
     learning_stalled = f["plateau"] and f["range_incomplete"]
     degradation = ", ".join(f["degradation_reasons"])
     rules = [
         (f["value_diverged"], "learning_rate",
          f"value function diverged, sustained (last {VALUE_LOSS_WINDOW} median={f['value_loss_med']:.3g}, "
-         f"prev window median={'%.3g' % f['value_loss_prev_med'] if f['value_loss_prev_med'] is not None else 'n/a'})", 3, False),
+         f"prev window median={'%.3g' % f['value_loss_prev_med'] if f['value_loss_prev_med'] is not None else 'n/a'})", 3, "diverge"),
         (f["degrading"] and "bad_orientation" in degradation, "flat_orientation_l2",
-         f"curve degradation ({degradation})", 4, True),
+         f"curve degradation ({degradation})", 4, "degrade"),
         (f["degrading"] and "err_yaw" in degradation, "track_ang_vel_z",
-         f"curve degradation ({degradation})", 3, True),
+         f"curve degradation ({degradation})", 3, "degrade"),
         (f["degrading"] and "err_xy" in degradation, "track_lin_vel_xy",
-         f"curve degradation ({degradation})", 2, True),
+         f"curve degradation ({degradation})", 2, "degrade"),
         (learning_stalled and f["exploration_collapsed"], "init_noise_std",
-         "plateaued with collapsed exploration (mean_noise_std<0.2)", 1, False),
+         "plateaued with collapsed exploration (mean_noise_std<0.2)", 1, "normal"),
         (learning_stalled and f["lr_pinned_frac"] > 0.4, "desired_kl",
-         "plateaued with adaptive LR pinned at its floor", 2, False),
-        (f["falls_rising"], "flat_orientation_l2", "fall rate rising", 4, True),
-        (f["yaw_stuck"], "track_ang_vel_z", "yaw gate stuck + poor yaw tracking", 3, False),
-        (f["lin_stuck"], "track_lin_vel_xy", "lin gate stuck + poor xy tracking", 2, False),
-        (f["plateau"] and f["yaw_stuck"], "success_yaw", "yaw gate stuck -> relax yaw threshold", 2, False),
-        (f["plateau"] and f["lin_stuck"], "success_xy", "lin gate stuck -> relax xy threshold", 2, False),
-        (learning_stalled, "entropy_coef", "plateaued -> more exploration bonus", 2, False),
-        (learning_stalled, "desired_kl", "plateaued -> allow larger policy updates", 3, False),
+         "plateaued with adaptive LR pinned at its floor", 2, "normal"),
+        (f["falls_rising"], "flat_orientation_l2", "fall rate rising", 4, "degrade"),
+        (f["yaw_stuck"], "track_ang_vel_z", "yaw gate stuck + poor yaw tracking", 3, "normal"),
+        (f["lin_stuck"], "track_lin_vel_xy", "lin gate stuck + poor xy tracking", 2, "normal"),
+        (f["plateau"] and f["yaw_stuck"], "success_yaw", "yaw gate stuck -> relax yaw threshold", 2, "normal"),
+        (f["plateau"] and f["lin_stuck"], "success_xy", "lin gate stuck -> relax xy threshold", 2, "normal"),
+        (learning_stalled, "entropy_coef", "plateaued -> more exploration bonus", 2, "normal"),
+        (learning_stalled, "desired_kl", "plateaued -> allow larger policy updates", 3, "normal"),
     ]
-    for cond, knob, reason, budget, needs_confirm in rules:
+    for cond, knob, reason, budget, klass in rules:
         if cond:
-            act = pick(knob, reason, budget)
+            act = pick(knob, reason, budget, exempt=klass != "normal")
             if act:
-                act["needs_confirm"] = needs_confirm
+                act["needs_confirm"] = klass == "degrade"
                 return act, blocked
     return None, blocked
 
@@ -482,9 +507,9 @@ def latest_checkpoint(run_dir: Path) -> Path | None:
 
 def _next_log() -> Path:
     i = 1
-    while Path(f"/tmp/train_go2_v{i}.log").exists():
+    while Path(f"{LOG_PREFIX}{i}.log").exists():
         i += 1
-    return Path(f"/tmp/train_go2_v{i}.log")
+    return Path(f"{LOG_PREFIX}{i}.log")
 
 
 def launch(run_dir: Path, mode: str) -> tuple[int, Path, str]:
@@ -536,7 +561,12 @@ def cooldown_reason(f: dict, state: dict, run_name: str, now: float | None = Non
     if last_run == run_name and f["step"] - state.get("last_action_step", -10**9) < MIN_ITERS_BETWEEN_ACTIONS:
         return "iteration cooldown active"
     if len([a for a in actions if a.get("status") == "applied"]) >= MAX_ACTIONS:
-        return f"global action cap reached ({MAX_ACTIONS})"
+        # The global cap only budgets the non-destructive "normal" rules; a worsening curve
+        # (value divergence / degradation / rising falls) must still get its stop -> edit ->
+        # relaunch response even after the campaign budget is spent (see decide).
+        degradation_signal = f.get("value_diverged") or f.get("degrading") or f.get("falls_rising")
+        if not degradation_signal:
+            return f"global action cap reached ({MAX_ACTIONS})"
     return None
 
 

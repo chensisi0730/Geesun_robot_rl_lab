@@ -105,18 +105,57 @@ class UnitreeG1PPORunnerCfg(BasePPORunnerCfg):
     )
 
 
-@configclass
-class UnitreeGeesunDogPPORunnerCfg(BasePPORunnerCfg):
-    """PPO for the GeesunDog (dog1) flat-terrain velocity task.
+# --- Geesun dog: one PPO runner class per asset variant ---
+# The two campaigns get *separate* classes (not a shared base) so the 6h auto-tuner can edit
+# one without touching the other and they can run concurrently. Hyper-parameters are kept
+# identical on purpose (the dog1 <-> lingsi_d30w ablation must differ only in the asset); when
+# you change one, change the other and note it in the ablation log.
 
-    Minimal change (2026-10-12): hyper-parameters identical to :class:`BasePPORunnerCfg`
-    (re-declared explicitly so the auto-tuner's knob edits are scoped to this class and can
-    never touch the shared Base used by other robots); only ``experiment_name`` differs so
-    runs land in ``logs/rsl_rl/unitree_geesun_dog/`` and the 6h monitor / auto-tuner can
-    follow this campaign independently of the Go2 one.
+
+@configclass
+class UnitreeGeesunDogDog1PPORunnerCfg(BasePPORunnerCfg):
+    """PPO for the GeesunDog **dog1** (footed quadruped) velocity task.
+
+    Hyper-parameters identical to :class:`BasePPORunnerCfg` (re-declared explicitly so the
+    auto-tuner's knob edits are scoped to this class and can never touch the shared Base used
+    by other robots); only ``experiment_name`` differs so runs land in
+    ``logs/rsl_rl/unitree_geesun_dog1/`` and the 6h monitor / auto-tuner can follow this
+    campaign independently of the Go2 and lingsi_d30w ones.
     """
 
-    experiment_name = "unitree_geesun_dog"
+    experiment_name = "unitree_geesun_dog1"
+    policy = RslRlPpoActorCriticCfg(
+        init_noise_std=1.0,
+        actor_hidden_dims=[512, 256, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+    )
+    algorithm = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=1.0e-3,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+    )
+
+
+@configclass
+class UnitreeGeesunDogLingsiD30WPPORunnerCfg(BasePPORunnerCfg):
+    """PPO for the GeesunDog **lingsi_d30w** (D30W wheel-legged) velocity task.
+
+    Same hyper-parameters as :class:`UnitreeGeesunDogDog1PPORunnerCfg` on purpose (ablation
+    parity); a separate class so runs land in ``logs/rsl_rl/unitree_geesun_lingsi_d30w/`` and
+    the auto-tuner scope can never cross into the dog1 campaign.
+    """
+
+    experiment_name = "unitree_geesun_lingsi_d30w"
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[512, 256, 128],

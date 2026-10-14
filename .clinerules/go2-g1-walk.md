@@ -9,6 +9,7 @@ GO2是GO2 EDU-ZL ，3D激光雷达MI3-360,
 
 总结整个地形和terrain_levels 和lin_vel_cmd_levels的设计逻辑，使用图表展示；
 terrain_levels 和lin_vel_cmd_levels的升级和降级的逻辑是什么？他们之间的关系是什么？如何稳定提高terrain_levels和lin_vel_cmd_levels？
+课程terrain_levels升级后，lin_vel_cmd_levels需要重置为0,是否合理？
 
 
 检查TensorBoard里面的各项训练曲线，列出每种地形的情况下，训练的情况，给出改进方案。

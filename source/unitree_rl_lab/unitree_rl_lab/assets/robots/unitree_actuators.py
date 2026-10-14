@@ -236,6 +236,44 @@ class UnitreeActuatorCfg_W4010_25(UnitreeActuatorCfg):
 
 
 @configclass
+class UnitreeActuatorCfg_D30W(UnitreeActuatorCfg):
+    """Self-contained actuator + PD parameter set for the lingsi_d30w wheel-legged variant.
+
+    Values from the vendor sheet `geesun_dog_urdf/geesun-dog/lingsi_d30w/urdf/D30W关节电气参数.xlsx`
+    (output-side parameters "输出端参数"): LS100_WLA/WLH (hip/thigh) 120 N*m / 40 rad/s,
+    LS100_WLK (calf) 200 N*m / 20 rad/s, LS75_WL (wheel) 14 N*m / 65 rad/s, KP max 500 /
+    KD max 5 (PD-gain upper bounds, output-side; the actual gains below are chosen inside
+    this envelope for numerical stability - see the fields). The sheet gives max ratings but
+    no torque-speed knee point, so X1 is placed at half the max speed (full torque below X1,
+    linear derating to X2) - conservative. Defaults below = LS100_WLH (thigh/hip); the calf
+    and wheel groups override X/Y at instance level in unitree.py. Isolated from GO2/dog1
+    parameter sets.
+    """
+
+    # torque-speed curve (N*m, rad/s) - LS100_WLA/WLH default
+    X1 = 20.0
+    X2 = 40.0
+    Y1 = 120.0
+    Y2 = 120.0
+    # friction model (not specified by the vendor sheet)
+    Fs = 0.0
+    Fd = 0.0
+    Va = 0.01
+    # rotor inertia (not in the sheet)
+    armature = 0.0
+    # PD gains: the sheet gives KP max 500 / KD max 5 (upper bounds, output-side). Gains are
+    # picked INSIDE that envelope for numerical stability of the explicit-PD actuator at the
+    # 5 ms physics step: the vendor maxima are deep in the negative-damping zone for these
+    # small joint inertias (b*dt/J >~ 2 -> exponential blow-up measured from a still start;
+    # KD=5 reproduced it, KD=2 did not). 100/2 keeps the leg joints in a measured-stable band
+    # (air PD tracking holds the stance to 0.001 rad; ground stand test holds 2 s with <1 cm
+    # sag). See README "lingsi_d30w PD 参数" for the tuning record.
+    stiffness = 100.0
+    damping = 2.0
+    friction = 0.0
+
+
+@configclass
 class UnitreeActuatorCfg_GeesunDog(UnitreeActuatorCfg):
     """Self-contained actuator + PD parameter set for the Geesun dog (dog1).
 

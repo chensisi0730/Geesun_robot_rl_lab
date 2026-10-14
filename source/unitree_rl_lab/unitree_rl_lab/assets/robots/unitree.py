@@ -753,17 +753,48 @@ GEESUN_DOG_VARIANT_SPECS: dict[str, dict] = {
         # links that touch the ground (used as "feet" by the locomotion rewards)
         "foot_body": ".*_calf",
         "leg_joints": ["joint_(fr|fl|hr|hl)_(hip|thigh|calf)"],
+        # standing pose: front legs thigh +1.0 / calf -1.4; rear legs same (measured against
+        # the dog921 foot-plate mesh: all four feet at 0.166 m below the base). Calf -1.4 stays
+        # inside the real dog921 limit [-1.885, 0].
+        "default_joint_pos": {
+            "joint_fr_thigh": 1.0,
+            "joint_fl_thigh": 1.0,
+            "joint_fr_calf": -1.4,
+            "joint_fl_calf": -1.4,
+            "joint_hl_thigh": 1.0,
+            "joint_hr_thigh": 1.0,
+            "joint_hl_calf": -1.4,
+            "joint_hr_calf": -1.4,
+        },
     },
     "lingsi_d30w": {
-        # the STEP export is a z-DOWN frame (URDF header: "x=front, y=left, z=down"), so Isaac's
-        # z-up world renders the robot inverted unless the root is rotated 180 deg about x.
-        "z_down": True,
+        # The current asset is the vendor SolidWorks export ("A01mW"): standard z-UP frame
+        # (legs extend toward -z, front = +x), so no 180 deg root flip is needed. (The earlier
+        # STEP-generated URDF was z-down; that trait died with that export.)
+        "z_down": False,
         # continuous wheel joints at the calf tips instead of foot plates
         "wheel_leg": True,
-        # base origin height with the wheels resting on the ground (measured: wheel bottom 0.237 m)
-        "root_z": 0.24,
+        # base origin height with the wheels resting on the ground: leg chain drops 0.511 m in
+        # the standing pose below (FK: 0.28 thigh + 0.275 calf offset) + 0.095 m wheel radius
+        # = 0.606 m; 0.61 leaves ~4 mm clearance (same convention as dog1's 0.17).
+        "root_z": 0.61,
         "foot_body": ".*_wheel",
         "leg_joints": ["joint_(fr|fl|hr|hl)_(hip|thigh|calf)"],
+        # standing pose from the vendor joint limits (hip +-0.698, thigh [-3.054, 1.0],
+        # calf [0.536, 2.775] - note the calf cannot go negative like dog1's). FK of the leg
+        # chain (thigh 0.28 m, calf->wheel 0.275 m, both pitch about -y): thigh=-0.397 +
+        # calf=0.8 puts the wheel 0.0005 m behind the hip pivot (i.e. legs straight down)
+        # 0.511 m below the base. All four legs share the sign convention (same joint axes).
+        "default_joint_pos": {
+            "joint_fr_thigh": -0.397,
+            "joint_fl_thigh": -0.397,
+            "joint_hr_thigh": -0.397,
+            "joint_hl_thigh": -0.397,
+            "joint_fr_calf": 0.8,
+            "joint_fl_calf": 0.8,
+            "joint_hr_calf": 0.8,
+            "joint_hl_calf": 0.8,
+        },
     },
 }
 _GEESUN_DOG_DEFAULT_SPEC = GEESUN_DOG_VARIANT_SPECS["dog1"]
@@ -873,12 +904,24 @@ def _prepare_geesun_dog_urdf() -> None:
         os.makedirs(tmp_mesh_dir, exist_ok=True)
         has_real_limits = os.path.basename(src_urdf) == "dog921.urdf"
     else:
-        # Other variants (e.g. lingsi_d30w, generated from the STEP export) carry absolute
-        # mesh paths and their own joint limits; stage whichever URDF the variant dir holds.
+        # Other variants carry their own URDF + meshes. For lingsi_d30w this is the vendor
+        # SolidWorks export ("A01mW": trunk / FR_hip_joint / FR_wheel_motor naming, z-up frame);
+        # the rewrite below maps it onto the code's joint_fr_* / fr_hip / base_link naming so
+        # every task/reward/curriculum term keeps working unchanged (dog1 stays untouched).
         dog_pkg_dir = f"{GEESUN_DOG_DIR}/geesun-dog/{GEESUN_DOG_VARIANT}"
-        candidates = sorted(glob.glob(f"{dog_pkg_dir}/urdf/*.urdf")) + sorted(
+        # Asset pick (2026-10-13 user decision dec-f57df34b6e418050): prefer the current
+        # vendor export "A01mw*.urdf" (e.g. "A01mw (3).urdf", mesh-collision export with the
+        # base_inertia dummy link), then the canonical <variant>.urdf, then any other URDF in
+        # the folder. The naming rewrite below handles both vendor naming styles, so any pick
+        # still yields the joint_fr_* / fr_hip / base_link convention every task expects.
+        candidates = sorted(glob.glob(f"{dog_pkg_dir}/urdf/A01mw*.urdf"))
+        canonical = f"{dog_pkg_dir}/urdf/{GEESUN_DOG_VARIANT}.urdf"
+        candidates += [canonical] if os.path.isfile(canonical) else []
+        candidates += sorted(glob.glob(f"{dog_pkg_dir}/urdf/*.urdf")) + sorted(
             glob.glob(f"{dog_pkg_dir}/*.urdf")
         )
+        seen = set()
+        candidates = [c for c in candidates if not (c in seen or seen.add(c))]
         src_urdf = candidates[0] if candidates else ""
         if not src_urdf:
             return
@@ -908,6 +951,104 @@ def _prepare_geesun_dog_urdf() -> None:
     content = re.sub(r"package://(?:dog1|dog921)/meshes/", f"{meshes_abs}/", content)
     for name in empty_hip_meshes:
         content = content.replace(f"{meshes_abs}/{name}", f"{tmp_mesh_dir}/{name}")
+
+    if GEESUN_DOG_VARIANT == "lingsi_d30w":
+        # --- vendor SolidWorks export ("A01mW") -> code-convention naming ---
+        # Two vendor exports exist (identical geometry: hip origin 0.2755 -0.085 0, thigh->calf
+        # 0 0 -0.28, calf->wheel 0 -0.0676 -0.275):
+        #  * "A01mw (3).urdf" (current default, picked by the A01mw* glob): joints
+        #    leg{0_fr,1_fl,2_hr,3_hl}_joint{0,1,2} + {fr,fl,hr,hl}_wheel_joint; links FR_hip/
+        #    FR_thigh/FR_calf (upper) + fr_wheel (lower) + base_link + base_inertia dummy.
+        #  * "lingsi_d30w.urdf" (legacy fallback): joints FR_hip_joint/FR_wheel_motor, links
+        #    FR_hip..., trunk.
+        # Both map onto joint_fr_hip / fr_hip / base_link so every task/reward/curriculum term
+        # keeps working unchanged. Only name=/link=" attributes are rewritten, so mesh file
+        # names (FR_hip.STL) are never touched - they keep pointing at the real STL files.
+        if "leg0_fr_joint0" in content:
+            # new-style joints
+            for leg_no, leg in ((0, "fr"), (1, "fl"), (2, "hr"), (3, "hl")):
+                for j_idx, part in enumerate(("hip", "thigh", "calf")):
+                    content = re.sub(
+                        rf'(<joint name=")leg{leg_no}_{leg}_joint{j_idx}(")',
+                        rf"\g<1>joint_{leg}_{part}\g<2>",
+                        content,
+                    )
+                content = re.sub(
+                    rf'(<joint name="){leg}_wheel_joint(")', rf"\g<1>joint_{leg}_wheel\g<2>", content
+                )
+        else:
+            # legacy-style joints: FR_hip_joint / FR_wheel_motor (RR->hr, RL->hl)
+            for src_leg, dst_leg in (("FR", "fr"), ("FL", "fl"), ("RR", "hr"), ("RL", "hl")):
+                for src_j, dst_j in (
+                    (f"{src_leg}_hip_joint", f"joint_{dst_leg}_hip"),
+                    (f"{src_leg}_thigh_joint", f"joint_{dst_leg}_thigh"),
+                    (f"{src_leg}_calf_joint", f"joint_{dst_leg}_calf"),
+                    (f"{src_leg}_wheel_motor", f"joint_{dst_leg}_wheel"),
+                ):
+                    content = re.sub(rf'(<joint name="){src_j}(")', rf"\g<1>{dst_j}\g<2>", content)
+        # links: FR_hip -> fr_hip etc. (matches the .*_hip / .*_thigh / .*_calf / .*_wheel
+        # body-name regexes used by the tasks); trunk -> base_link
+        for src_leg, dst_leg in (("FR", "fr"), ("FL", "fl"), ("RR", "hr"), ("RL", "hl")):
+            for part in ("hip", "thigh", "calf", "wheel"):
+                content = re.sub(
+                    rf'(<link name="){src_leg}_{part}(")', rf"\g<1>{dst_leg}_{part}\g<2>", content
+                )
+                content = re.sub(rf'(link="){src_leg}_{part}(")', rf"\g<1>{dst_leg}_{part}\g<2>", content)
+        content = re.sub(r'(<link name=")trunk(")', r"\g<1>base_link\g<2>", content)
+        content = re.sub(r'(link=")trunk(")', r"\g<1>base_link\g<2>", content)
+        # mesh refs: package://quad_description/meshes/A01mw/ (new export) or ../meshes/
+        # (legacy export) -> absolute path into the variant's meshes/ dir
+        content = re.sub(r"package://quad_description/meshes/A01mw/", f"{meshes_abs}/", content)
+        content = content.replace("../meshes/", f"{meshes_abs}/")
+        # wheel spin axes: the new export mirrors the left wheels (fl/hl axis "0 1 0") while the
+        # right ones use "0 -1 0", so equal wheel joint velocities would spin the two sides
+        # against each other. Unify all four on "0 1 0" (+qdot = roll forward for every wheel).
+        content = re.sub(
+            r'(<joint name="joint_(?:fr|fl|hr|hl)_wheel".*?<axis\s+xyz=")[^"]*(")',
+            r"\g<1>0 1 0\g<2>",
+            content,
+            flags=re.DOTALL,
+        )
+        # effort/velocity limits -> vendor sheet D30W关节电气参数.xlsx (output side "输出端参数"):
+        # hip/thigh LS100_WLA/WLH 120 N*m / 40 rad/s, calf LS100_WLK 200 N*m / 20 rad/s,
+        # wheel LS75_WL 14 N*m / 65 rad/s. Covers both exports' native values
+        # (72/27, 136/14, 20/65 in the new one; 100/20, 160/15, 14/65 in the legacy one).
+        content = re.sub(
+            r'effort="(?:100|72)(?:\.0)?"\s+velocity="(?:20|27)(?:\.0)?"',
+            'effort="120.0" velocity="40.0"',
+            content,
+        )
+        content = re.sub(
+            r'effort="(?:160|136)(?:\.0)?"\s+velocity="(?:15|14)(?:\.0)?"',
+            'effort="200.0" velocity="20.0"',
+            content,
+        )
+        content = re.sub(r'effort="20(?:\.0)?"\s+velocity="65(?:\.0)?"', 'effort="14.0" velocity="65.0"', content)
+        # trunk/base_link collision: the vendor export gives the chassis a full mesh hull (or a
+        # 1.0 x 0.26 x 0.22 box in the legacy export) that SWALLOWS the hip and upper-thigh
+        # volumes. Those grandparent-grandchild overlaps inject huge de-penetration torques
+        # (~80 N*m measured: legs get kicked 0.25 rad within 50 ms from a standstill) - the
+        # dominant instability source of this variant. Replace every base_link collision block
+        # with a slim chassis box (x +-0.21, y +-0.10, z [0, 0.10]) that reaches neither the hip
+        # pivots (x +-0.2755) nor the thighs, while keeping a contact body so the base_contact
+        # termination (base_link touch) keeps working.
+        content = re.sub(
+            r'(<link name="base_link">)(.*?)(</link>)',
+            lambda m: m.group(1)
+            + re.sub(
+                r'<collision>.*?</collision>\s*',
+                "",
+                m.group(2),
+                flags=re.DOTALL,
+            )
+            + '    <collision>\n      <origin xyz="0 0 0.05" rpy="0 0 0"/>\n      <geometry><box size="0.42 0.20 0.10"/></geometry>\n    </collision>\n  '
+            + m.group(3),
+            content,
+            flags=re.DOTALL,
+        )
+        # diagnostic switch: strip every collision block to isolate contact forces
+        if os.environ.get("D30W_NO_COLLISION") == "1":
+            content = re.sub(r"<collision>.*?</collision>\s*", "", content, flags=re.DOTALL)
 
     # The legacy dog1 export has zeroed / too-tight joint limits (SolidWorks export default),
     # so they are replaced with reasonable ranges that let the robot actually move.
@@ -1035,21 +1176,51 @@ def ensure_geesun_dog_usd() -> str:
 # The leg joints are position-controlled; on wheel-legged variants the continuous wheel joints get
 # their own group driven as a pure velocity servo (stiffness=0 -> tau = damping * (v_des - v)),
 # because a position drive on a continuous wheel joint would fight free rolling.
-_GEESUN_DOG_ACTUATORS = {
+if GEESUN_DOG_WHEEL_LEG:
+    # lingsi_d30w (D30W): vendor-specified actuators, values from D30W关节电气参数.xlsx via the
+    # self-contained UnitreeActuatorCfg_D30W (isolated from GO2/dog1). hip/thigh = LS100_WLA/WLH
+    # (120 N*m / 40 rad/s), calf = LS100_WLK (200 N*m / 20 rad/s), wheels = LS75_WL (14 N*m /
+    # 65 rad/s). The wheels are pure velocity servos (stiffness=0 -> tau = damping * (v_des - v),
+    # damping = vendor KD max 5) so a position drive cannot fight free rolling.
+    _GEESUN_DOG_ACTUATORS = {
+        "GeEsunDogHipThigh": unitree_actuators.UnitreeActuatorCfg_D30W(
+            joint_names_expr=["joint_(fr|fl|hr|hl)_(hip|thigh)"],
+        ),
+        "GeEsunDogCalf": unitree_actuators.UnitreeActuatorCfg_D30W(
+            joint_names_expr=["joint_(fr|fl|hr|hl)_calf"],
+            X1=10.0,
+            X2=20.0,
+            Y1=200.0,
+            Y2=200.0,
+        ),
+        "GeEsunDogWheels": unitree_actuators.UnitreeActuatorCfg_D30W(
+            joint_names_expr=list(GEESUN_DOG_WHEEL_JOINT_NAMES),
+            X1=32.5,
+            X2=65.0,
+            Y1=14.0,
+            Y2=14.0,
+            stiffness=0.0,
+            # velocity-servo gain. The vendor KD max (5) is an upper bound; as a pure velocity
+            # damper it sits deep in the explicit-Euler negative-damping zone (b*dt/J > 2 ->
+            # bang-bang at the +-14 N*m limit that kicks the legs apart; measured: wheels at
+            # +-20 rad/s within 0.5 s). b = 1 + armature 0.01 (rotor + wheel hub inertia
+            # reflected to the joint, not given by the vendor sheet) gives b*dt/J_eff = 0.33
+            # (6x margin). Do NOT convert this group to a position servo: kp=500 on the same
+            # inertia puts kd*dt/J = 2 at the stability edge (verified exponential blow-up
+            # within 5 steps from a perfectly still start).
+            damping=1.0,
+            armature=0.01,
+            friction=0.0,
+        ),
+    }
+else:
     # PD gains come from the self-contained UnitreeActuatorCfg_GeesunDog class (isolated from
     # GO2/other robots); only joint names are bound here.
-    "GeEsunDog": unitree_actuators.UnitreeActuatorCfg_GeesunDog(
-        joint_names_expr=list(GEESUN_DOG_VARIANT_SPEC["leg_joints"]),
-    ),
-}
-if GEESUN_DOG_WHEEL_LEG:
-    # friction=0 so the GeesunDog friction model does not brake free rolling
-    _GEESUN_DOG_ACTUATORS["GeEsunDogWheels"] = unitree_actuators.UnitreeActuatorCfg_GeesunDog(
-        joint_names_expr=list(GEESUN_DOG_WHEEL_JOINT_NAMES),
-        stiffness=0.0,
-        damping=5.0,
-        friction=0.0,
-    )
+    _GEESUN_DOG_ACTUATORS = {
+        "GeEsunDog": unitree_actuators.UnitreeActuatorCfg_GeesunDog(
+            joint_names_expr=list(GEESUN_DOG_VARIANT_SPEC["leg_joints"]),
+        ),
+    }
 
 
 # fmt: off
@@ -1074,7 +1245,11 @@ GEESUN_DOG_CFG = UnitreeArticulationCfg(
         usd_path=GEESUN_DOG_USD,
         activate_contact_sensors=True,
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=True,
+            # lingsi_d30w (vendor A01mW export): the trunk collision box encloses the hip/thigh
+            # volumes, so grandparent-grandchild self-collision pairs (trunk vs thigh) inject
+            # huge de-penetration forces that blow the legs apart (verified: PD stand test
+            # drifts apart within ~2 s). dog1 keeps its historical self-collision behaviour.
+            enabled_self_collisions=not GEESUN_DOG_WHEEL_LEG,
             solver_position_iteration_count=8,
             solver_velocity_iteration_count=4,
         ),
@@ -1089,31 +1264,17 @@ GEESUN_DOG_CFG = UnitreeArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        # Measured standing height per variant (see GEESUN_DOG_VARIANT_SPECS["root_z"]): for dog1 the
-        # foot-plate bottom is 0.166 m below the base origin (see README, Geesun 站立姿态验证), so 0.17
-        # leaves ~4 mm clearance; for lingsi_d30w the wheel bottom is 0.237 m below the base, so 0.24.
+        # Measured/computed standing height per variant (see GEESUN_DOG_VARIANT_SPECS["root_z"]):
+        # for dog1 the foot-plate bottom is 0.166 m below the base origin (see README, Geesun
+        # 站立姿态验证), so 0.17 leaves ~4 mm clearance; for lingsi_d30w (vendor A01mW export)
+        # the wheel bottom is 0.606 m below the base in the standing pose, so 0.61.
         pos=(0.0, 0.0, GEESUN_DOG_VARIANT_SPEC["root_z"]),
-        # z-down exports (e.g. lingsi_d30w) are flipped 180 deg about x so the wheels end up below
-        # the base instead of above it
+        # z-down exports are flipped 180 deg about x so the wheels end up below the base instead
+        # of above it (the current lingsi_d30w vendor export is z-up, so no flip there)
         rot=GEESUN_DOG_ROOT_ROT_Z_DOWN if GEESUN_DOG_VARIANT_SPEC["z_down"] else (1.0, 0.0, 0.0, 0.0),
-        joint_pos={
-            # front legs (fr/fl): thigh forward (+), calf backward (-)
-            "joint_fr_thigh": 1.0,
-            "joint_fl_thigh": 1.0,
-            "joint_fr_calf": -1.4,
-            "joint_fl_calf": -1.4,
-            # rear legs (hl/hr): thigh +1.0 (same sign as the front legs). Measured against
-            # the dog921 foot-plate mesh, +1.0 puts all four feet at the same height
-            # (0.166 m below the base) - the natural standing stance. The legacy -1.0
-            # stance lifts the rear feet ~2.5 cm and leaves the rear foot plate vertical
-            # (the dog "sits" on its front paws and tips backwards).
-            # Calf -1.4 stays inside the real dog921 limit range [-1.885, 0]
-            # (the legacy +1.4 pose exceeded upper=0).
-            "joint_hl_thigh": 1.0,
-            "joint_hr_thigh": 1.0,
-            "joint_hl_calf": -1.4,
-            "joint_hr_calf": -1.4,
-        },
+        # per-variant standing pose (dog1: thigh +1.0 / calf -1.4 inside [-1.885, 0];
+        # lingsi_d30w: thigh -0.397 / calf +0.8 inside the vendor limits, legs straight down)
+        joint_pos=dict(GEESUN_DOG_VARIANT_SPEC["default_joint_pos"]),
         joint_vel={"joint_.*": 0.0},
     ),
     actuators=_GEESUN_DOG_ACTUATORS,

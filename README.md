@@ -89,6 +89,25 @@
     ```bash
     ./unitree_rl_lab.sh -l # 比 isaaclab 启动更快
     ```
+
+    GeesunDog（Geesun 四足）在列表中有两个任务，指向同一套任务定义、只差资产变体
+    GeesunDog（Geesun 四足）在列表中有两个**完全独立**的任务——各自独立的 `velocity_env_cfg.py`
+    （任务定义：地形/奖励/课程/动作）、独立的 PPO 类（强化学习算法配置）、独立的日志目录，
+    因此两个战役可以**同时训练、同时开自动调参**，互不干扰：
+
+    | 任务名 | 资产变体 | 任务定义 | PPO 类 | 日志目录 |
+    |---|---|---|---|---|
+    | `Unitree-GeesunDog-Dog1-Velocity` | `dog1`（有足四足） | `robots/geesun_dog/dog1/velocity_env_cfg.py` | `UnitreeGeesunDogDog1PPORunnerCfg` | `logs/rsl_rl/unitree_geesun_dog1/` |
+    | `Unitree-GeesunDog-LingsiD30W-Velocity` | `lingsi_d30w`（D30W 轮足） | `robots/geesun_dog/lingsi_d30w/velocity_env_cfg.py` | `UnitreeGeesunDogLingsiD30WPPORunnerCfg` | `logs/rsl_rl/unitree_geesun_lingsi_d30w/` |
+
+    > 两个变体各自在自己的任务定义里锁定资产变体，**不再依赖 `GEESUN_DOG_VARIANT` 环境变量
+    > （environment variable）**，因此不会因忘记设环境变量而跑错机器人。
+    > 旧入口 `Unitree-GeesunDog-Velocity`（靠 `GEESUN_DOG_VARIANT` 切换）已于 2026-10-14 移除，
+    > 改用上表两个任务名。
+    >
+    > **变体只有资产层共享**（`unitree_rl_lab/assets/robots/unitree.py` 里的 URDF→USD
+    > 转换、执行器（actuator）模型、`ArticulationCfg`），任务级配置完全分开。
+    > 做 dog1 ↔ lingsi_d30w 消融对照时 `diff` 两个 `velocity_env_cfg.py` 即可看到全部差异。
 ## 训练 GO2 复杂地形行走策略：
 
     ```bash
@@ -104,8 +123,13 @@
         --resume --load_run RUN_ID 2>&1 | tee /tmp/train_go2_resume.log
 
     conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
-        --task Unitree-GeesunDog-Velocity --num_envs 22000 \
-        --resume --load_run 2026-10-12_20-24-42 2>&1 | tee /tmp/train_GeesunDog_resume.log        
+        --task Unitree-GeesunDog-Dog1-Velocity --num_envs 22000 \
+        --resume --load_run 2026-10-12_20-24-42 2>&1 | tee /tmp/train_GeesunDog_resume.log 
+
+    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
+        --task Unitree-GeesunDog-LingsiD30W-Velocity    --num_envs 22000 \
+        --resume --load_run 2026-10-12_20-24-42 2>&1 | tee /tmp/train_GeesunDog_resume.log 
+            
     ```
 
     训练日志和 checkpoint 默认保存在 `logs/rsl_rl/unitree_go2_velocity/`。
@@ -250,7 +274,10 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
     --task Unitree-Go2-Velocity --load_run RUN_ID
 
 conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
-    --task Unitree-GeesunDog-Velocity --load_run 2026-10-13_10-07-28
+    --task Unitree-GeesunDog-Dog1-Velocity --load_run 2026-10-13_10-07-28
+
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
+    --task Unitree-GeesunDog-LingsiD30W-Velocity --load_run 2026-10-14_08-47-04  --num_envs 10
 
 ```
 
@@ -464,20 +491,33 @@ python scripts/geesun_dog/move_geesun_dog.py --no_pin_root --root_z 0.17 --num_s
 **任务训练（可选）：**
 
 ```bash
-# dog1 平地训练（GEESUN_DOG_VARIANT 默认 dog1；地形 sub_terrains 仅 flat）
-GEESUN_DOG_VARIANT=dog1 ./unitree_rl_lab.sh -t --task Unitree-GeesunDog-Velocity --num_envs 24096
-# run 目录：logs/rsl_rl/unitree_geesun_dog/<时间戳>/（experiment_name=unitree_geesun_dog）
-tensorboard --logdir logs/rsl_rl/unitree_geesun_dog
+# dog1（有足四足）训练：独立任务，变体由任务名锁定，无需设 GEESUN_DOG_VARIANT
+./unitree_rl_lab.sh -t --task Unitree-GeesunDog-Dog1-Velocity --num_envs 24096
+# lingsi_d30w（D30W 轮足）训练：独立任务，可与上面的 dog1 同时跑，run 目录互不覆盖
+./unitree_rl_lab.sh -t --task Unitree-GeesunDog-LingsiD30W-Velocity --num_envs 24096
+# run 目录由 experiment_name 决定，两个变体各自独立：
+#   dog1        -> logs/rsl_rl/unitree_geesun_dog1/<时间戳>/
+#   lingsi_d30w -> logs/rsl_rl/unitree_geesun_lingsi_d30w/<时间戳>/
+tensorboard --logdir logs/rsl_rl   # 同时看两个变体的曲线
+# 课程状态（速度命令范围进度）也各自独立：
+#   logs/rsl_rl/unitree_geesun_dog1/curriculum_state.json
+#   logs/rsl_rl/unitree_geesun_lingsi_d30w/curriculum_state.json
 ```
 
 > **6h 监控/自动调参实例（2026-10-12 起）：** GeesunDog 战役有独立的监控闭环，与 Go2 的
 > 互不干扰（独立 state 目录 `outputs/monitor_dog/`、`outputs/autotune_dog/`）：
 > ```bash
 > nohup bash scripts/monitor_tb_check_dog.sh >> outputs/monitor_dog/monitor.log 2>&1 &
+> # lingsi_d30w 战役用独立闭环（state 目录 outputs/monitor_d30w/、outputs/autotune_d30w/）：
+> nohup bash scripts/monitor_tb_check_d30w.sh >> outputs/monitor_d30w/monitor.log 2>&1 &
 > ```
-> 每 6h 检查曲线 → 恶化时自动停止训练、修改超参（PPO 类 scope 为
-> `UnitreeGeesunDogPPORunnerCfg`，奖励类编辑 geesun_dog 的 `velocity_env_cfg.py`）并重启。
-> 报告：`outputs/monitor_dog/report.md`；关掉自动调参：`touch outputs/autotune_dog/DISABLED`。
+> 每 6h 检查曲线 → 恶化时自动停止训练、修改超参并重启。每个战役只改自己的文件：
+> dog1 编辑 `geesun_dog/dog1/velocity_env_cfg.py` + PPO 类 `UnitreeGeesunDogDog1PPORunnerCfg`；
+> d30w 编辑 `geesun_dog/lingsi_d30w/velocity_env_cfg.py` + PPO 类 `UnitreeGeesunDogLingsiD30WPPORunnerCfg`。
+> 报告：`outputs/monitor_dog/report.md`（d30w：`outputs/monitor_d30w/report.md`）；关掉自动调参：
+> `touch outputs/autotune_dog/DISABLED`（d30w：`touch outputs/autotune_d30w/DISABLED`）。
+> **（2026-10-14 起）两个变体的 PPO 类与 env cfg 文件已完全独立，可以同时开自动调参**
+> （此前共用一份、必须错开跑的限制已解除）。
 
 > **注意：** 若关节位置冻结在固定姿态，说明腿与地面或彼此卡死——可在脚本中调高基座高度（`default_root[0, 2]`）或减小 `--amp_deg`。
 
@@ -497,6 +537,50 @@ python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --num_steps 0
     --calf_base 0.8 --calf_amp_deg 15 --wheel_speed 10
 ```
 
+**PD 参数（参考 `urdf/D30W关节电气参数.xlsx`，输出端）：** 执行器配置 `UnitreeActuatorCfg_D30W`
+（`unitree_actuators.py`，与 GO2/dog1 隔离），effort/velocity（力矩/角速度）上限由 URDF 重写
+直接取 Excel 值，PD 增益取 Excel 上限内的实测稳定值：
+
+| 关节组 | 型号 | 力矩上限 (N·m) | 角速度上限 (rad/s) | KP（上限 500） | KD（上限 5） |
+| --- | --- | --- | --- | --- | --- |
+| hip/thigh（髋/大腿） | LS100_WLA/WLH | 120 | 40 | 100 | 2 |
+| calf（小腿） | LS100_WLK | 200 | 20 | 100 | 2 |
+| wheel（轮） | LS75_WL | 14 | 65 | 0（速度伺服） | b=1（速度环增益）+ armature（转子惯量）0.01 |
+
+**⚠ 厂家 URDF 自带 limit 与 Excel 的口径差异（2026-10-13 记录）：** 厂家 URDF（`A01mw (3).urdf`，
+已同步为 `lingsi_d30w.urdf`）的 `<limit>` 与 `D30W关节电气参数.xlsx` **并不一致**，代码按用户确认
+（2026-10-13）以 **Excel 为准**统一覆盖：
+
+| 关节组 | URDF 厂家 limit | Excel（采用） | 差异说明 |
+| --- | --- | --- | --- |
+| hip/thigh（髋/大腿） | 72 N·m / 27 rad/s | 120 N·m / 40 rad/s | Excel 激进 ~1.7×（疑为连续额定 vs 峰值口径） |
+| calf（小腿） | 136 N·m / 14 rad/s | 200 N·m / 20 rad/s | Excel 激进 ~1.5×（同上） |
+| wheel（轮） | 20 N·m / 65 rad/s | 14 N·m / 65 rad/s | Excel 保守（厂家轮子口径可能是峰值） |
+
+生效代码共两处，改口径时**必须两处同步**：
+1. `unitree.py::_prepare_geesun_dog_urdf()` 内三条 `re.sub` 把 URDF `<limit>` 重写为 Excel 值
+   （同时兼容两版 URDF 原值 72/27、136/14、20/65 与 100/20、160/15、14/65）；
+2. `unitree_actuators.py::UnitreeActuatorCfg_D30W` 的力矩-速度曲线（X1/X2 拐点、Y1/Y2 饱和力矩
+   = 120）+ `unitree.py` 各关节组实例覆盖（calf Y=200、wheel Y=14）。
+
+**sim2real（仿真到实机）注意：** 若实机驱动保护按 URDF 口径（72/136 N·m）执行，训练策略可能用到
+实机放不出来的力矩；保守做法是删除上面第 1 条的三条 regex 并把第 2 条的 Y 值同步调小
+（腿 72/136、轮保持 14），随后重新训练。
+
+> **为什么不用 Excel 的 KP=500/KD=5 最大值（2026-10-13 实测调参记录）：** Excel 给的是**上限**
+> 而非推荐值。显式 PD（explicit PD，力矩 = KP·误差 + KD·误差速度）在 dt=5 ms（毫秒）下对本机的
+> 小关节惯量会踩进**离散负阻尼区**（b·dt/J ≥ 2）：从精确保时的静止开始，0.1 N·m 级重力微扰在
+> 5 步内被指数放大到力矩饱和（±120 N·m）bang-bang（来回打满），腿 0.5 s 内被甩开 ±0.6 rad。
+> 实测矩阵（空中 PD 追踪，`--print_contact`）：KP=500/KD=5 发散、KP=60/KD=5 发散、轮速度伺服
+> b=5 轮速 0.5 s 内 ±20 rad/s（b·dt/J≈5）；**KP=100/KD=2 + 轮 b=1/armature 0.01 稳定**
+> （地面静立 2 s 下沉 <1 cm、水平漂移 <15 cm 后收敛，是训练关心的工况；空中无接触工况仍有
+> 慢漂移，留给 RL 策略闭环纠正；KP=69/KD=1.38（dog1 同款）则空中精确静止但地面半蹲至 z≈0.36，
+> 二选一取地面表现）。trunk 碰撞体也已缩小（厂家 mesh 凸包
+> 罩住髋/大腿体积，去穿插力 ~80 N·m 会把腿炸开）。
+> 调参脚本：`python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --headless \
+> --num_steps 300 --root_z 1.5 --amp_deg 0 --wheel_speed 0 --stiffness <KP> --damping <KD>`；
+> 诊断开关 `D30W_NO_COLLISION=1` 可临时移除全部碰撞体隔离接触力。
+
 注意：关节 origin（关节原点）来自厂家 CAD，**尚待实测标定**；关节限位（hip ±0.698、thigh [-3.054, 1.0]、
 calf [0.536, 2.775] rad）为厂家导出值。STEP → URDF（统一机器人描述格式）自动转换脚本
 `scripts/lingsi_d30w/step_to_urdf_d30w.py` 已于 2026-10-13 删除（厂家 URDF 到位后不再需要，
@@ -508,6 +592,24 @@ git 历史可找回）；原始 `D30W轮足外发.STEP`（204 MB）已从本地�
 > （`GEESUN_DOG_VARIANT_SPECS["lingsi_d30w"]`：`z_down=False`，无需 180°（度）root（根节点）翻转，
 > `root_z=0.61`，站姿 thigh（大腿）-0.397 / calf 0.8），训练 / `play.py` / `move_geesun_dog.py`
 > 各入口一致，左右镜像副作用也随之消失。
+
+**验证训练结果（lingsi_d30w 专用步骤）：** 通用流程见上文[验证训练结果](#验证训练结果)（回放 →
+定量测试 → TensorBoard → 日志检查 → 验收清单），只需把入口换成
+`--task Unitree-GeesunDog-LingsiD30W-Velocity`：
+
+```bash
+# 1. 训练前基线：PD 静立应 2 s 下沉 <1 cm（不达标先按上文 PD 调参，不要带病训练）
+python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --headless \
+    --num_steps 400 --no_pin_root --root_z 0.61 --settle_steps 100 --amp_deg 0 --wheel_speed 0
+# 2. 回放训练策略（自动选最新 checkpoint，加 --headless 录屏）
+./unitree_rl_lab.sh -p --task Unitree-GeesunDog-LingsiD30W-Velocity
+# 3. 曲线：重点关注 Episode_Termination/base_contact（应接近 0）、
+#    Curriculum/terrain_levels_*、Curriculum/lin_vel_cmd_levels/*_max（应稳步上升）
+tensorboard --logdir logs/rsl_rl/unitree_geesun_lingsi_d30w
+# 4. 与 dog1 的消融对照只改一个变量：--task 任务名
+#    （Unitree-GeesunDog-Dog1-Velocity ↔ Unitree-GeesunDog-LingsiD30W-Velocity），
+#    其余全不动；用 diff 核对两个 velocity_env_cfg.py 的差异是否只有资产/足部/动作项
+```
 
 ## 部署
 
