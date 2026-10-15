@@ -1202,15 +1202,17 @@ if GEESUN_DOG_WHEEL_LEG:
             Y1=20.0,
             Y2=20.0,
             stiffness=0.0,
-            # velocity-servo gain. The vendor KD max (5) is an upper bound; as a pure velocity
-            # damper it sits deep in the explicit-Euler negative-damping zone (b*dt/J > 2 ->
-            # bang-bang at the +-20 N*m limit that kicks the legs apart; measured: wheels at
-            # +-20 rad/s within 0.5 s). b = 1 + armature 0.01 (rotor + wheel hub inertia
-            # reflected to the joint, not given by the vendor sheet) gives b*dt/J_eff = 0.33
-            # (6x margin). Do NOT convert this group to a position servo: kp=500 on the same
-            # inertia puts kd*dt/J = 2 at the stability edge (verified exponential blow-up
-            # within 5 steps from a perfectly still start).
-            damping=1.0,
+            # VENDOR UPDATE 2026-10-14: the wheels are a pure velocity servo - KD = 3, NO KP
+            # (a position drive on a continuous wheel joint would fight free rolling, so
+            # stiffness stays 0 -> tau = KD * (v_des - v)). Discrete check at dt = 5 ms with
+            # armature 0.01 (rotor + wheel hub reflected inertia, not in the vendor sheet):
+            # KD*dt/J_eff = 3*0.005/0.01 = 1.5, i.e. below the negative-damping blow-up
+            # threshold of 2 but with only a 1.33x margin (the old KD=1 sat at 0.5, 4x
+            # margin; the sheet max KD=5 sits at 2.5 and was measured kicking the wheels to
+            # +-20 rad/s within 0.5 s). Do NOT convert this group to a position servo: kp=500
+            # on the same inertia puts kd*dt/J = 2 at the stability edge (verified exponential
+            # blow-up within 5 steps from a perfectly still start).
+            damping=3.0,
             armature=0.01,
             friction=0.0,
         ),

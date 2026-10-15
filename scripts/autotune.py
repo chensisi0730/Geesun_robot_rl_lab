@@ -45,6 +45,7 @@ import difflib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -73,6 +74,10 @@ TASK = os.environ.get("MON_TASK", "Unitree-Go2-Velocity")
 NUM_ENVS = int(os.environ.get("MON_NUM_ENVS", "18000"))  # aligned with the manually launched runs since 2026-09-24
 TRAIN_PATTERN = os.environ.get("MON_TRAIN_PATTERN", r"train\.py.*Unitree-Go2-Velocity")
 LOG_PREFIX = os.environ.get("MON_LOG_PREFIX", "/tmp/train_go2_v")
+# Extra train.py flags for relaunched runs (in-training video recording). Must match the
+# MON_EXTRA_TRAIN_ARGS used by monitor_tb_check.py, otherwise the video flags silently disappear
+# on the first autotune relaunch. Default empty = previous behaviour.
+EXTRA_TRAIN_ARGS = shlex.split(os.environ.get("MON_EXTRA_TRAIN_ARGS", ""))
 ISAACLAB_PATH = "/home/css/work/unitree/rl/unitree_Robert/isaaclab/IsaacLab"
 PROXY = "http://127.0.0.1:7897"
 
@@ -515,7 +520,7 @@ def _next_log() -> Path:
 def launch(run_dir: Path, mode: str) -> tuple[int, Path, str]:
     env = dict(os.environ, ISAACLAB_PATH=ISAACLAB_PATH, http_proxy=PROXY, https_proxy=PROXY)
     cmd = [PY, str(REPO / "scripts" / "rsl_rl" / "train.py"), "--headless",
-           "--task", TASK, "--num_envs", str(NUM_ENVS)]
+           "--task", TASK, "--num_envs", str(NUM_ENVS), *EXTRA_TRAIN_ARGS]
     if mode == "resume":
         ckpt = latest_checkpoint(run_dir)
         if ckpt is None:

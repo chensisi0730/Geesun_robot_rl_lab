@@ -127,10 +127,70 @@
         --resume --load_run 2026-10-12_20-24-42 2>&1 | tee /tmp/train_GeesunDog_resume.log 
 
     conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
-        --task Unitree-GeesunDog-LingsiD30W-Velocity    --num_envs 22000 \
+        --task Unitree-GeesunDog-LingsiD30W-Velocity    --num_envs 20096 \
         --resume --load_run 2026-10-14_08-47-04 2>&1 | tee /tmp/train_GeesunDog_resume.log 
+
+    # 训练同时录制视频：每 100 迭代一段 10 s（500 步 @ 50 fps），相机侧向跟拍机器狗。
+    # video_interval 的单位是 env.step() 调用次数 = 迭代数 × num_steps_per_env(24)，见「验证训练结果 §0」
+    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
+        --task Unitree-GeesunDog-LingsiD30W-Velocity --num_envs 20096 --resume --load_run 2026-10-15_01-16-28 \
+        --video --video_length 500 --video_interval 10000 --camera_view side 2>&1 | tee /tmp/train_video.log
+
+    # ⚠ 下面是 2026-10-14 当时的历史命令：run 2026-10-14_23-26-00 已停在 model_7900.pt，
+    # 当前战役最新 run 是 2026-10-15_01-16-28（model_15300.pt）。今天续训请用下面「当前推荐」版。
+    # 从旧 run 续训前必须先备份/移走 terrain_levels_state.json 与 curriculum_state.json
+    # （sidecar，旁路状态文件；见「验证训练结果 § 前置检查」），否则旧策略会被灌入最新战役的地形等级。
+
+    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
+    --task Unitree-GeesunDog-LingsiD30W-Velocity --num_envs 20096 \
+    --resume --load_run 2026-10-15_01-16-28 \
+    --video --video_length 250 --video_interval 10000 --video_start_frac 0.5 \
+    --video_start_episode_frac 0.35 --camera_view diag --camera_distance 0.57 --camera_height 1.2 --camera_focal 21            
             
+
+    # 当前推荐（2026-10-15 起）：续训最新 run，录像参数与守护进程逐字一致（camera 三项等于默认值，可省略）
+    # ⚠ 必须带 conda run -s（--no-capture-output，不捕获输出），否则日志全程 0 字节 —— 见下方「conda run 吞日志」
+    conda run -s -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
+        --task Unitree-GeesunDog-LingsiD30W-Velocity --num_envs 20096 \
+        --resume --load_run 2026-10-15_01-16-28 --checkpoint model_15300.pt \
+        --video --video_length 250 --video_interval 10000 \
+        --video_start_frac 0.5 --video_start_episode_frac 0.35 --camera_view diag \
+        --camera_distance 0.57 --camera_height 1.2 --camera_focal 21 2>&1 | tee /tmp/train_d30w_ht10x_manual.log
+
+    # 等价写法（绕开 conda run，用环境解释器绝对路径；守护进程脚本用的就是这个）
+    /home/css/miniconda3/envs/env_isaaclab_sim51/bin/python scripts/rsl_rl/train.py --headless \
+        --task Unitree-GeesunDog-LingsiD30W-Velocity --num_envs 20096 \
+        --resume --load_run 2026-10-15_01-16-28 --checkpoint model_15300.pt \
+        --video --video_length 250 --video_interval 10000 \
+        --video_start_frac 0.5 --video_start_episode_frac 0.35 --camera_view diag \
+        --camera_distance 0.57 --camera_height 1.2 --camera_focal 21 2>&1 | tee /tmp/train_d30w_ht10x_manual.log
+
     ```
+
+> **⚠ `conda run` 吞日志（2026-10-15 实测；"训练没有生效"的唯一真相）：** `conda run` 默认
+> **capture output（捕获输出）**——它接管子进程的 stdout（标准输出）/ stderr（标准错误），
+> **直到子进程退出才一次性打印**。于是 `conda run ... | tee /tmp/xxx.log` 里的 `tee` 全程收到 0 字节，
+> 日志文件创建后一直是空的，看起来"命令没有生效"，**而训练进程其实活着**（实测：日志 0 字节，
+> 但 `train.py` 已跑 4 分钟、CPU 193%、GPU 已占 6 GB）。
+>
+> 修法（二选一，上面两条命令已改好）：
+> 1. 加 `-s`（= `--no-capture-output` / `--live-stream`，不捕获输出、实时透传）；
+> 2. 绕开 `conda run`，直接用该环境的解释器绝对路径（`scripts/monitor_tb_check_d30w_ht10x.sh` 用的就是这个）。
+>
+> **判定"训练到底有没有在跑"的三步法（不要看日志文件大小）：**
+>
+> ```bash
+> pgrep -af 'train[.]py'                                                              # 有 PID = 进程活着
+> nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader           # 训练期 ~20-25 GiB
+> ls -lat logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x/ | head -3           # 出现新时间戳目录 = 已建 run
+> ```
+>
+> 补充两点容易误判的现象：
+> - **`--resume`（续训）也会新建一个带新时间戳的 run 目录**（权重从 `--load_run` 读，日志/checkpoint 写新目录），
+>   所以启动早期"没有新目录"是正常的：Isaac Sim（仿真器）启动 + URDF→USD 转换 + 20096 环境地形生成需数分钟，
+>   期间 GPU（图形处理器）占用低、CPU（中央处理器）满载。
+> - `outputs/<日期>/<时刻>/.hydra/config.yaml` 已写出而 `logs/rsl_rl/` 无新目录 = 卡在 Isaac Sim 启动阶段，
+>   不是参数错误（参数错误会在 `hydra.log` 里留下 argparse（命令行解析）报错）。
 
     训练日志和 checkpoint 默认保存在 `logs/rsl_rl/unitree_go2_velocity/`。
     新建训练时不要添加 `--resume`；只有从已有运行继续训练时才使用
@@ -154,7 +214,7 @@
 
 ## 策略测试与力矩统计
 
-`scripts/rsl_rl/test_flat_walk.py` 使用训练好的 checkpoint 进行定量测试，并记录行走指标和每个关节的执行器力矩。通过 `--terrain` 选择测试地形：
+`scripts/rsl_rl/test_walk_torque.py` 使用训练好的 checkpoint 进行定量测试，并记录行走指标和每个关节的执行器力矩。通过 `--terrain` 选择测试地形：
 
 | `--terrain` | 地形 | 用途 |
 |---|---|---|
@@ -172,29 +232,29 @@
 
 ```bash
 # 平地名义工况，自动加载最新 checkpoint
-conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_walk_torque.py \
     --task Unitree-Go2-Velocity \
     --terrain flat \
     --steps 500
 
 # 指定 checkpoint 时，将 RUN_ID 和 checkpoint 文件名替换为实际值
-conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_walk_torque.py \
     --task Unitree-Go2-Velocity \
     --terrain flat \
     --checkpoint logs/rsl_rl/unitree_go2_velocity/RUN_ID/model_7300.pt \
     --steps 500
 
 # 复杂地形压力测试，推荐用于电机选型参考
-conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_walk_torque.py \
     --task Unitree-Go2-Velocity \
     --terrain complex \
     --steps 1000
 
 # 使用任务的 play 配置地形，省略 checkpoint 时自动选择最新结果
-conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity --terrain play
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_walk_torque.py --task Unitree-Go2-Velocity --terrain play
 
 # GeesunDog（Geesun 狗，dog1）关节力矩统计（硬件选型参考），换 --task 即可
-conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_walk_torque.py \
     --task Unitree-GeesunDog-Dog1-Velocity --terrain flat --steps 1000
 ```
 
@@ -245,14 +305,17 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
 >
 > 解决（二选一）：
 > 1. 脚本已在结果打印结束后显式 `sys.stdout.flush()`，直接重新运行即可；
-> 2. 或运行时加 `-u` 关闭缓冲：`python -u scripts/rsl_rl/test_flat_walk.py ...`。
+> 2. 或运行时加 `-u` 关闭缓冲：`python -u scripts/rsl_rl/test_walk_torque.py ...`。
 
-> **回放相机跟随（2026-10-12 起）：** `scripts/rsl_rl/play.py` 录像/回放时视角自动跟随机器人
+> **回放相机跟随（2026-10-12 起，2026-10-14 增加自由视角）：** `scripts/rsl_rl/play.py` 录像/回放时视角默认自动跟随机器人
 > （走远不再出画；实现见 play.py 的 `_follow_camera()`，每步更新视口相机位姿），风格由
 > `--camera_view` 参数选择：`side`（侧面）为默认——相机在机器人侧方 2.2 m、上方 1.1 m，
 > 保持看向机首，不随偏航角（yaw）旋转（侧向跟拍）；`rear`（后面）——相机在机器人身后
-> 2.2 m、上方 1.1 m，随偏航角转动（身后追拍）。
-> 用法：`python scripts/rsl_rl/play.py ... --camera_view side`（可省略）/ `--camera_view rear`。
+> 2.2 m、上方 1.1 m，随偏航角转动（身后追拍）；`free`（自由视角，2026-10-14 新增）——机位只在
+> 首帧设置一次，之后**完全不动**，可在 Kit 视口（viewport，图形窗口）里自由拖动/旋转/缩放，
+> 适合录楼梯这种需要看全局构图的场景。初始机位用 `--camera_eye X Y Z` / `--camera_target X Y Z`
+> 指定（世界坐标，米），不指定则默认取出生点斜上方 3.5 m / 1.6 m。
+> 用法：`python scripts/rsl_rl/play.py ... --camera_view side`（默认，可省略）/ `rear` / `free`。
 
 > **电机选型（motor sizing）：** 关节力矩数据与选型结论汇总见 [doc/motor_sizing.md](doc/motor_sizing.md)。
 
@@ -260,9 +323,165 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
 
 训练完成后，建议先目视回放，再进行平地和复杂地形定量测试
 
-### 1. 复杂地形回放
+### 前置检查（pre-flight check，启动前检查）与 sidecar（旁路状态文件）规则
 
-使用 `play.py` 检查策略在任务 play 配置中的实际表现：
+**任何手工启动训练 / 录像之前，先确认 GPU（图形处理器）空闲并停掉 6h 守护进程（daemon，后台监控循环）**
+——同一 GPU 只能跑一个 IsaacSim（仿真器）实例：
+
+```bash
+ps -eo pid,etime,args | grep -E 'monitor_tb_check|train[.]py|play[.]py' | grep -v grep
+nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader   # 空闲时期望 ~2.7 GiB / 32.6 GiB
+MON_PID=$(pgrep -f 'monitor_tb_check_d30w_ht10x[.]sh')
+[ -n "$MON_PID" ] && { pkill -P "$MON_PID" sleep; kill "$MON_PID"; }
+```
+
+> **为什么必须先停守护进程：** 它每 6 h 一轮，检测到训练进程 DEAD 时会自动
+> `--resume --load_run <最新 run> --checkpoint <最新 model_*.pt>` 重启训练
+> （`scripts/monitor_tb_check.py:234`），与手工 run 抢同一块 GPU；判定曲线恶化时还会
+> SIGTERM→SIGKILL 杀掉手工 run，并按它自己的 `MON_EXTRA_TRAIN_ARGS` 重启（录像参数与手工命令不一致）。
+> 停止 / 重启方法见下文「10× 网络规模消融」小节第 **2b** 步。
+
+**sidecar（旁路状态文件）规则**（`scripts/rsl_rl/train.py:447-459`）：`--resume`（续训）时
+`terrain_levels_state.json`（地形等级）与 `curriculum_state.json`（速度命令范围）**被保留并加载**，
+只有 fresh（重训）才删除它们。二者按 `experiment_name` 目录共享，**不属于某个 run**：
+
+| 情形 | 后果 |
+|---|---|
+| 从**旧 run** 续训（例：`--load_run 2026-10-14_23-26-00`，其最新 checkpoint 只到 `model_7900.pt`） | 旧策略被直接灌入最新战役的 sidecar（实测 `terrain_levels` 均值 6.006、`x_max` ±0.5、`step` 178000）→ 大面积摔倒 → 等级雪崩，并把雪崩结果**写回同一个 json**，反向污染最新战役状态（2026-10-12 崩溃模式的复现路径） |
+| 改 `--num_envs`（并行环境数）后续训 | `curriculums.py:48-49` 校验 `num_envs` / `max_level` 不匹配 → `[WARN] ... keeping the random initial levels`，等级从 `max_init_terrain_level` 重爬 |
+
+跨 run / 回退消融前，必须先备份并移走两个 sidecar：
+
+```bash
+cd logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x
+mv curriculum_state.json     curriculum_state.json.bak_<ITER>
+mv terrain_levels_state.json terrain_levels_state.json.bak_<ITER>
+# 实验结束后按原名逐字移回（课程项按仓库相对路径读取，文件名不可改）
+```
+
+
+
+### 0. 训练时录制视频（in-training video recording）——**已重新启用（re-enabled，2026-10-14 23:45，5 s 短片）**
+
+> **当前状态：** `scripts/monitor_tb_check_d30w_ht10x.sh` 第 50 行**已启用**录像：
+> `export MON_EXTRA_TRAIN_ARGS="--video --video_length 250 --video_interval 2400 --video_start_frac 0.5 --video_start_episode_frac 0.35 --camera_view diag --camera_distance 0.57 --camera_height 1.2 --camera_focal 21"`
+> —— `--video_length 250` = **5.0 s**（`render_fps = 1/step_dt = 1/0.02 = 50`）；`--video_interval 2400`
+> 会被 episode 相位锁定吸附为 **2000 步 = 2 个 episode = 83 迭代**一段。
+> **历史状态（2026-10-14 曾停用，保留作消融记录）：** `MON_EXTRA_TRAIN_ARGS=""` = 与启用录像前逐字一致
+> （消融安全）；停用原因是常驻 +4 GB 显存（RTX 渲染全程开启）+ 约 12% 占空比。做无录像对照就改回空串。
+> **重新启用**：把下面这一行粘贴到该脚本的 `export MON_EXTRA_TRAIN_ARGS=`（参数均已实测）：
+>
+> ```bash
+> export MON_EXTRA_TRAIN_ARGS="--video --video_length 500 --video_interval 2400 --video_start_frac 0.5 --video_start_episode_frac 0.35 --camera_view diag --camera_distance 0.57 --camera_height 1.2 --camera_focal 21"
+> ```
+>
+> 启用后**必须重启守护进程**（守护进程持有的是启动时的环境变量，改文件不会生效），且**必须在 GPU
+> 空闲时启动训练**：2026-10-14 实测，在另一个 IsaacSim 实例占用 GPU 时启动录像训练，RTX 渲染器
+> 初始化失败，产出一段 250 帧全同空白画面（299 KB）。
+
+`scripts/rsl_rl/train.py` 自带训练内录像参数，训练过程中自动产出视频，无需额外脚本：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--video` | 关闭 | 开启训练内录像，并**自动强制** `--enable_cameras`（相机渲染） |
+| `--video_length` | 500 | 每段视频的步数；`render_fps = 1/step_dt = 50`，故 **500 = 10 s**、200 = 4 s |
+| `--video_interval` | 2000 | 两段录像之间的间隔，**单位是 `env.step()` 调用次数**（见下方单位坑） |
+| `--video_start_frac` | 无 | **首段延迟 = 该比例 × 一个检查点（checkpoint，检查点）间隔**（`save_interval` = 100 迭代）；`0.5` = 正好在两个 checkpoint 中间开录，绝不在出生点开录 |
+| `--video_start_episode_frac` | 无 | **episode 相位锁定（phase lock，相位锁定）**：把每段录像钉在 episode 的该相位（`0.35` = 20 s episode 的第 7 s 起）；会自动把 `video_interval` 吸附为整数个 episode，使相位永久锁定 |
+| `--video_start_run_frac` | 无 | 首段延迟 = 该比例 × 本次剩余迭代数（`max_iterations` − 续训起点） |
+| `--camera_view` | `diag` | **跟拍相机（follow camera，跟拍相机）**：`diag`（斜后方高俯拍）/ `rear`（身后追拍）/ `side`（侧向跟拍，旧默认，见下方邻居问题）/ `free`（自由视角，机位只设一次） |
+| `--camera_distance` / `--camera_height` / `--camera_focal` | 0.57 / 1.2 / 21 | `diag` 的水平偏移（米，后/左各半）/ 高于机身的垂直偏移（米）/ 录像期间临时收窄的焦距（毫米，录完恢复） |
+| `--camera_eye` / `--camera_target` | 出生点斜上方 3.5 / 1.6 m | 仅 `--camera_view free` 用：初始机位（世界坐标，米） |
+
+输出：`<run>/videos/train/rl-video-step-<N>.mp4`（1280×720, 50 fps），**相机每步跟随 `env_0` 的机器狗**
+（`FollowCameraWrapper`，见下）。
+
+```bash
+# 训练 + 每 100 迭代录一段 10 s 视频，斜后方高俯拍跟随机器狗，避开出生密集网格
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
+    --task Unitree-GeesunDog-LingsiD30W-Velocity --num_envs 20096 \
+    --video --video_length 500 --video_interval 2400 \
+    --video_start_frac 0.5 --video_start_episode_frac 0.35 \
+    --camera_view diag --camera_distance 0.57 --camera_height 1.2 --camera_focal 21
+```
+
+> **⚠ 单位坑（2026-10-14 实测）：** `video_interval` 由 gymnasium `RecordVideo.step_id` 计数，它只在
+> 每次 `env.step()` 调用时 +1；rsl_rl 每个迭代调用 `num_steps_per_env = 24` 次，所以它的单位是
+> **策略步（policy step，策略步）调用次数，不是 env steps（环境步）**：
+>
+> ```
+> video_interval = 期望迭代数 × num_steps_per_env(24)
+> 每 100 迭代一段 → --video_interval 2400
+> ```
+>
+> 按 env steps 算出的 `48230400`（= 20096 envs × 24 × 100）相当于 200 万迭代 → **永不触发**。
+> 首段在 `step_id == 0`（训练一开始）就录制，可立刻用 `ffprobe` 验收。
+
+**代价（2026-10-14 实测：lingsi_d30w 10× 网络 + 20096 envs）：**
+
+| 项 | 无录像 | 带录像 + 跟拍 |
+|---|---|---|
+| 显存（VRAM） | 21.0 GB | **24.7 GB**（RTX 渲染全程开启，常驻 +4 GB） |
+| 迭代耗时 | 3.5 s | 录像写入期间 ~5.8 s（500 帧 ≈ 21 个迭代；跟拍相机每步一次 3 浮点 GPU→CPU 同步，约 +0.2 s），录完回到 ~3.7 s |
+| 均摊开销 | — | ~45 s / 100 迭代（约 12% 占空比） |
+
+**与 6h 监控闭环联动：** 监控 `scripts/monitor_tb_check.py` 与自动调参 `scripts/autotune.py` 的重启
+命令都通过环境变量 `MON_EXTRA_TRAIN_ARGS`（训练附加参数）透传这些参数，因此自动续训 / 自动调参
+重启后录像参数**不会丢失**；默认值为空 = 完全保持旧行为，其他战役不受影响（消融安全）：
+
+```bash
+# scripts/monitor_tb_check_d30w_ht10x.sh 内（该战役已启用）
+export MON_EXTRA_TRAIN_ARGS="--video --video_length 500 --video_interval 2400 --camera_view side"
+# 做无录像对照：export MON_EXTRA_TRAIN_ARGS=""
+```
+
+**跟拍相机（follow camera，跟拍相机）原理：** `RecordVideo` 的帧来自
+`env.cfg.viewer.cam_prim_path`（默认 `/OmniverseKit_Persp`，即 Kit 视口相机，1280×720），这是一台
+**固定机位**相机——20096 个环境铺满整片地形网格时，机器狗几秒内就走出了画面。`train.py` 的
+`FollowCameraWrapper`（移植自 `play.py` 已验证的 `_follow_camera()`）在**录像期间**每步把这台相机
+搬到 `env_0` 机器狗身上（`side`：侧方 2.2 m、上方 1.1 m，看向机首、不随偏航角（yaw）旋转；
+`rear`：身后 2.2 m 追拍、随偏航角转动；`free`：首帧定机位后完全不动）。非录像期间不搬机位、
+零开销。日志会打印 `[INFO] Follow camera (跟拍相机) enabled for training videos: view=side`。
+
+**验收（2026-10-14 实测）：**
+
+```bash
+V=<run>/videos/train/rl-video-step-0.mp4
+ffprobe -v error -show_entries stream=width,height,nb_frames,avg_frame_rate \
+        -show_entries format=duration,size -of default=noprint_wrappers=1 $V
+# 期望：1280x720, nb_frames=500, duration=10.0, ~12 MB（固定机位全景只有 ~0.8 MB）
+for t in 0 2.5 5 7.5 9.9; do ffmpeg -v error -ss $t -i $V -frames:v 1 -y /tmp/fr_$t.png; done
+```
+
+判读：跟拍生效时，画面中心区域在**整段 10 s 内**都保持高方差（实测 `centre_std ≈ 93–103`，即机器狗
+一直在画面里）；固定机位下机器狗走远后中心会退化成平坦地形（方差骤降）。
+
+> **已知小瑕疵：** 每段第 1 帧是 RTX（实时光追）渲染预热帧（全黑，IsaacLab 在空数据时返回零图），
+> 500 帧里占 1 帧（20 ms），不影响判读。
+
+> 训练内录像只跟随 **`env_0`** 一个环境；要看清步态细节、指定地形与命令速度，用
+> `scripts/rsl_rl/play.py`（`--terrain` / `--cmd_x` / `--camera_view`，见下一节）。
+
+### 1. 复杂地形回放与录像
+
+`scripts/rsl_rl/play.py` 用训练好的 checkpoint（检查点）目视回放并录制视频（video）。
+地形由 `--terrain`（地形）选择，预设（terrain presets，地形预设）统一放在
+`scripts/rsl_rl/terrain_presets.py`，子地形（sub-terrain）参数**从各机器人自己的 task cfg 读取**，
+因此轮足机器人不会被要求爬超过其轮半径的台阶。
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--terrain` | `play` | `play`（任务 play 配置）、`flat`（平地）、`random_rough`（随机粗糙）、`stairs`（楼梯）、`complex`（混合复杂地形：flat + random_rough + pyramid_stairs，5 行 × 12 列，出生覆盖全部难度行）。 |
+| `--stair_height MIN MAX` | 读 task cfg | 覆盖楼梯踏步高度（米）。默认从 task cfg 读取：`lingsi_d30w` 与 GO2 现已**一致**为 `0.05 0.23`（2026-10-14 起，严格消融对照）。轮足保守测试可显式 `--stair_height 0.03 0.10`（轮半径 0.095 m）。 |
+| `--video` | 关闭 | 录制视频，自动开启 `--enable_cameras`（相机渲染）。 |
+| `--video_length` | 200 | 录制步数；`render_fps = 1/step_dt = 50`，故 750 步 ≈ 15 s。 |
+| `--video_tag` | `play` | 视频写入 `<run>/videos/<tag>/`，不同地形的录像互不覆盖。 |
+| `--camera_view` | `side` | `side`（侧面跟拍）/ `rear`（身后追拍）/ `free`（自由视角，首帧定机位后不跟随，配 `--camera_eye` / `--camera_target`）。 |
+| `--env_cfg_file` | 无 | **用该 run 保存的 `params/velocity_env_cfg.py` 快照回放**。当 task cfg 在训练后被改动（例如给 critic（价值网络）观测加了 `height_scanner`（高度扫描传感器），观测维度从 76 变 263）时，直接加载旧 checkpoint 会报 `size mismatch for critic.0.weight`，此时必须用本参数。 |
+| `--cmd_x / --cmd_y / --cmd_z MIN MAX` | play 全范围 | 覆盖速度命令范围，例如只测前进 `--cmd_x 0.3 0.8`。 |
+| `--no_standing` | 关闭 | 关闭站立环境（standing envs），保证每个机器人都持续行走（录像推荐）。 |
+| `--no_curriculum` | 关闭 | 关闭课程项（curriculum terms），地形难度在回放中保持不变（录像推荐，且不会污染 `curriculum_state.json`）。 |
+| `--episode_length_s` | 无（用 cfg 的 20 s） | 覆盖 episode 长度（`env_cfg.episode_length_s`，默认 20 s = 1000 步）。录 30 s（1500 帧）时设 `35`，整段不会出现锁步复位（lockstep reset，机器狗同时回到出生点）。不带该参数 = 行为与旧版逐字一致。 |
 
 ```bash
 # 自动选择最新 checkpoint
@@ -276,9 +495,20 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
 conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
     --task Unitree-GeesunDog-Dog1-Velocity --load_run 2026-10-13_10-07-28
 
-conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
-    --task Unitree-GeesunDog-LingsiD30W-Velocity --load_run 2026-10-14_08-47-04  --num_envs 10
 
+logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x/2026-10-14_16-12-31
+# 复杂地形录像（lingsi_d30w 轮足，2026-10-14 实测）：
+# 必须用 --env_cfg_file 指向该 run 的快照（该 run 训练时没有 height_scanner），
+# 并用 --stair_height 0.03 0.10 把台阶压到轮足能爬的范围。
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py --headless --video --video_length 3050 --video_tag stairs \
+    --camera_view side --num_envs 4 --no_standing --no_curriculum \
+    --task Unitree-GeesunDog-LingsiD30W-Velocity \
+    --checkpoint logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x/2026-10-14_16-12-31/model_2800.pt \
+    --env_cfg_file logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x/2026-10-14_16-12-31/params/velocity_env_cfg.py \
+    --terrain stairs --stair_height 0.03 0.30 \
+    --cmd_x 0.1 0.1 --cmd_y -0.1 0.1 --cmd_z -0.3 0.3
+# 输出：<run>/videos/complex/rl-video-step-0.mp4（1280x720, 50 fps）
+# 分地形定位短板：把 --terrain 换成 stairs / random_rough，并换 --video_tag 同名
 ```
 
 观察要点：
@@ -287,29 +517,130 @@ conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
 - 步态是否自然
 - 是否出现侧翻、摔倒或明显打滑
 
+> **注意：** 录像需要 GPU 渲染，同一时刻只能有一个 Isaac Sim 实例（见「关键契约」），录像前先停训练。
+> 用 `ffprobe -show_entries stream=width,height,nb_frames -show_entries format=duration <mp4>` 校验产出。
+
+#### 楼梯演示录像（lingsi_d30w 楼梯 + height_scanner 演示，2026-10-14 起）
+
+楼梯 run（训练批次）训练完成后，按下面命令录楼梯。**必须带 `--env_cfg_file`**：楼梯 run 训练时 critic（价值网络）
+观测含 `height_scanner`（高度扫描传感器）共 263 维，而当前 task cfg 若与之不同，直接加载 checkpoint（检查点）会报
+`size mismatch for critic.0.weight`；`--env_cfg_file` 让回放用该 run 自己的 `params/velocity_env_cfg.py` 快照，维度自然对齐。
+
+```bash
+# 0) 先停训练（同一 GPU 只能跑一个 IsaacSim 实例）
+pkill -f 'train[.]py.*Unitree-GeesunDog-LingsiD30W-Velocity'
+
+# 1) 楼梯录像：侧向跟拍（默认），750 步 ≈ 15 s，4 个环境降低渲染负担
+RUN=logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x/<RUN_ID>
+python scripts/rsl_rl/play.py --headless --video --video_length 750 --video_tag stairs \
+    --camera_view side --num_envs 4 --no_standing --no_curriculum \
+    --task Unitree-GeesunDog-LingsiD30W-Velocity \
+    --checkpoint $RUN/model_<ITER>.pt \
+    --env_cfg_file $RUN/params/velocity_env_cfg.py \
+    --terrain stairs --cmd_x 0.1 0.1 --cmd_y -0.1 0.1 --cmd_z -0.3 0.3
+# 输出：<RUN>/videos/stairs/rl-video-step-0.mp4（1280x720, 50 fps）
+
+# 2) 自由视角版：看整段金字塔楼梯的全局构图（机位固定，Kit 视口可自由拖动）
+python scripts/rsl_rl/play.py --headless --video --video_length 750 --video_tag stairs_free \
+    --camera_view free --camera_eye 6.0 6.0 2.2 --camera_target 0.0 0.0 0.2 \
+    --num_envs 4 --no_standing --no_curriculum \
+    --task Unitree-GeesunDog-LingsiD30W-Velocity \
+    --checkpoint $RUN/model_<ITER>.pt --env_cfg_file $RUN/params/velocity_env_cfg.py \
+    --terrain stairs --cmd_x 0.2 0.6
+# 日志会打印 [INFO] Free camera (自由视角): eye=[...] target=[...]
+
+# 3) 逐地形录像：--terrain 换 flat / random_rough / complex，并把 --video_tag 改成同名（避免互相覆盖）
+# 4) 校验产出
+ffprobe -show_entries stream=width,height,nb_frames -show_entries format=duration \
+    $RUN/videos/stairs/rl-video-step-0.mp4
+```
+
+要点：
+- `--video_tag`（视频标签）**必须按地形改名**，否则 `videos/<tag>/` 互相覆盖。
+- `--num_envs 4`：录像走 RTX（实时光追）渲染，环境数多会显著增显存并拖慢。
+- `--no_standing`（关闭站立环境）保证机器人在录像里持续行走；`--no_curriculum`（关闭课程）保证地形难度在回放中不变，且**不会污染** `curriculum_state.json`（课程状态文件）。
+- 楼梯难度：`--terrain stairs` 是 5 行 × 4 列网格、出生随机到最难行（`difficulty=1.0`），踏步高即 task cfg 的 `step_height_range` 上限（现与 GO2 一致 0.23 m）。想只看低难度楼梯：加 `--stair_height 0.03 0.10`。
+- 目视判读：机器人是否抬腿把轮心抬过踏步、轮子是否打滑/顶住踏步边缘、`base_contact`（机身接触）与侧翻是否出现。
+
+#### 四段标准录像组（15 s / 30 s，2026-10-15 实测固化）
+
+同一 checkpoint（检查点）一次录满 4 种地形，用于「目视验证 + 定位短板」。以 `model_15300.pt`
+（run `2026-10-15_01-16-28`，stairs 楼梯 + `height_scanner` 高度扫描传感器 + 10x 网络）为例：
+
+| `--video_tag`（视频标签） | `--terrain`（地形） | `--cmd_x`（前进命令 m/s） | 帧数 / 时长 |
+|---|---|---|---|
+| `stairs_<ITER>` | `stairs`（0.05–0.23 m，与 GO2 严格消融） | `0.2 0.4` | 749 / 15.0 s |
+| `stairs_low_<ITER>` | `stairs` + `--stair_height 0.03 0.10`（轮半径 0.095 m 保守上限） | `0.3 0.5` | 749 / 15.0 s |
+| `flat_<ITER>` | `flat`（平地） | `0.4 0.5` | 749 / 15.0 s |
+| `rough_<ITER>` | `random_rough`（随机粗糙，noise 0.01–0.03 m） | `0.3 0.5` | 749 / 15.0 s |
+
+30 s 长版：`--video_length 1500 --episode_length_s 35`，tag 加 `_30s` 后缀（1499 帧 / 29.98 s）。
+
+```bash
+RUN=logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x/2026-10-15_01-16-28
+COMMON="--headless --video --video_length 1500 --episode_length_s 35 --num_envs 4 \
+        --no_standing --no_curriculum --camera_view side \
+        --task Unitree-GeesunDog-LingsiD30W-Velocity \
+        --checkpoint $RUN/model_15300.pt --env_cfg_file $RUN/params/velocity_env_cfg.py"
+python scripts/rsl_rl/play.py $COMMON --video_tag stairs_15300_30s --terrain stairs \
+    --cmd_x 0.2 0.4 --cmd_y -0.1 0.1 --cmd_z -0.5 0.5
+# 其余三段：把 --video_tag / --terrain / --cmd_x 换成上表值
+```
+
+> **固化脚本（2026-10-15）：** 上面这组命令已固化为 **`scripts/tests/play_shiping_luzhi.sh`**
+> （bash 脚本：段间 45 s 冷却 + `timeout 600` 兜底 + 自动 `ffprobe` 产出校验 + 课程状态文件未被污染的核对）。
+> 运行方式：`bash scripts/tests/play_shiping_luzhi.sh`；后台跑：
+> `nohup bash scripts/tests/play_shiping_luzhi.sh > /tmp/play_shiping_luzhi.out 2>&1 &`。
+>
+> ⚠️ **它是 shell 脚本，不是 Python。** 用 `python scripts/tests/play_shiping_luzhi.sh` 执行会报
+> `SyntaxError: unterminated string literal (detected at line 3)` —— 因为 `COMMON="..."` 的跨行赋值是
+> shell 语法，Python 词法分析器看到跨行的双引号字符串就报未闭合。文件名后缀也必须是小写 `.sh`
+> （不要用 `.PY` 后缀，`.PY` 会被当成 Python 文件）。
+>
+> 实测产出（2026-10-15 10:02，`model_15300.pt`）：`videos/stairs_15300_30s/rl-video-step-0.mp4`
+> = 1280×720 / 50 fps / **1499 帧 / 29.98 s**，与 `--video_length 1500 --episode_length_s 35` 设计一致
+> （30 s 片段内无锁步复位 mid-clip reset）。
+
+
+
+> **串行录像必须段间冷却 45 s（2026-10-15 实测）：** 上一段 Isaac Sim 退出后 GPU 上下文尚未释放就启动下一段，
+> 会卡在渲染初始化——主线程 0% CPU、`carb.taskloop` 单线程 94% CPU 空转 12 min 且不产出 `videos/<tag>/`。
+> 修法：段间 `sleep 45`，并给每段加 `timeout 600` 兜底。
+>
+> **产出校验（三段式）：**
+> `ffprobe -show_entries stream=width,height,nb_frames -show_entries format=duration <mp4>` → 1280×720 / 50 fps / 1499 帧 / 29.98 s；
+> `ffmpeg -i <mp4> -vf "signalstats,metadata=print:key=lavfi.signalstats.YAVG" -f null -` → 黑帧数应为 0（平均亮度 ~175）；
+> `ls -la logs/rsl_rl/<exp>/curriculum_state.json terrain_levels_state.json` → mtime 必须早于录像时间（证明 `--no_curriculum` 未污染课程状态）。
+>
+> 已知瑕疵：每段首帧是 RTX（实时光追）预热帧；`conda run` 的 stdout 缓冲会截断日志尾部 INFO 行，以 `ffprobe` 为准。
+
 ### 2. 定量行走与力矩测试
+
+> 脚本原名 `test_flat_walk.py`，2026-10-14 更名为 **`test_walk_torque.py`**（行走性能 + 逐关节力矩统计），
+> 因为它的产出早已不只测平地：逐关节 Peak（峰值）/ P99（99 分位）/ RMS（均方根）力矩 + 前进速度 +
+> 高度方差 + XY/yaw 跟踪误差 + 成功率。CSV（逗号分隔表格）文件名与内容格式不变（`<terrain>_terrain_stats.csv`）。
 
 ```bash
 # 平地基线
-conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_walk_torque.py \
     --task Unitree-Go2-Velocity \
     --terrain flat \
     --steps 500
 
 # 复杂地形压力测试
-conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_walk_torque.py \
     --task Unitree-Go2-Velocity \
     --terrain complex \
     --steps 1000
 
-conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_walk_torque.py \
     --task Unitree-GeesunDog-Dog1-Velocity \
     --terrain complex \
     --steps 1000    
 
 # 分地形定位短板
 for terrain in random_rough stairs; do
-    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_flat_walk.py \
+    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_walk_torque.py \
         --task Unitree-Go2-Velocity --terrain "$terrain" --steps 1000
 done
 ```
@@ -322,8 +653,21 @@ done
 ### 3. TensorBoard
 
 ```bash
-tensorboard --logdir logs/rsl_rl/unitree_go2_velocity
+tensorboard --logdir logs/rsl_rl   # 必须是 logs/rsl_rl 本身，见下方 TEXT 说明
 ```
+
+> **TEXT 页（曲线中文说明）**：logdir 必须是 `logs/rsl_rl` **本身**，不能写子目录（如
+> `logs/rsl_rl/unitree_go2_velocity`）。中文说明以独立 run `00_曲线中文说明` 的形式放在
+> `logs/rsl_rl/` 顶层，与各训练 run 同级；用子目录作 logdir 时左侧 run 列表里列不出它，
+> **TEXT 页就是空白**。刷新说明：
+>
+> ```bash
+> python scripts/tb_notes.py          # 重写（幂等）；--list 只在终端打印对照表
+> ```
+>
+> 备注内容同时覆盖 GO2 与 GeesunDog D30W 两套基准（回合长度跑满值、跟踪误差水位、fps 量级、
+> 奖励权重、地形种类都不同，**不可跨机器人横比**），维护在 `scripts/tb_notes.py` 的 `NOTES`
+> 字典里，是曲线释义的单一事实来源。
 
 重点观察以下实际标签：
 
@@ -526,8 +870,8 @@ tensorboard --logdir logs/rsl_rl   # 同时看两个变体的曲线
 16 joint（关节），其中 4 个轮关节为 `revolute`（旋转关节）limit ±999999，等效 `continuous`（连续旋转））
 + 17 个厂家 STL 网格（`meshes/`，来自厂家包 `meshes-ok.zip`）。加载时 `_prepare_geesun_dog_urdf()`
 自动把厂家命名（`FR_hip_joint`/`trunk`/`FR_wheel_motor`）改写为代码约定命名
-（`joint_fr_hip`/`base_link`/`joint_fr_wheel`），mesh（网格）引用改写为绝对路径，并按
-`urdf/D30W关节电气参数.xlsx` 覆盖 effort/velocity（力矩/角速度）上限，可直接加载：
+（`joint_fr_hip`/`base_link`/`joint_fr_wheel`），mesh（网格）引用改写为绝对路径，并把 effort/velocity
+（力矩/角速度）上限归一化为 URDF 原值，可直接加载：
 
 ```bash
 python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --headless --num_steps 400
@@ -537,40 +881,47 @@ python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --num_steps 0
     --calf_base 0.8 --calf_amp_deg 15 --wheel_speed 10
 ```
 
-**PD 参数（参考 `urdf/D30W关节电气参数.xlsx`，输出端）：** 执行器配置 `UnitreeActuatorCfg_D30W`
-（`unitree_actuators.py`，与 GO2/dog1 隔离），effort/velocity（力矩/角速度）上限由 URDF 重写
-直接取 Excel 值，PD 增益取 Excel 上限内的实测稳定值：
+**PD 参数：** 执行器配置 `UnitreeActuatorCfg_D30W`
+（`unitree_actuators.py`，与 GO2/dog1 隔离），effort/velocity（力矩/角速度）上限**以厂家 URDF
+（`lingsi_d30w.urdf`）的 `<limit>` 为准**（2026-10-14 用户确认，取代 2026-10-13 的“以 Excel 为准”），
+PD 增益取**厂家 2026-10-14 给出的推荐工作点**（Excel 新增列原文：`KP 最大500,推荐200`、
+`KD 最大5,推荐5`、轮子 `KP 最大500,厂家说没有此设置`、`KD 最大5,推荐3`）：
 
-| 关节组 | 型号 | 力矩上限 (N·m) | 角速度上限 (rad/s) | KP（上限 500） | KD（上限 5） |
+| 关节组 | 型号 | 力矩上限 (N·m) | 角速度上限 (rad/s) | KP（上限 500 / **推荐 200**） | KD（上限 5 / **推荐 5**） |
 | --- | --- | --- | --- | --- | --- |
-| hip/thigh（髋/大腿） | LS100_WLA/WLH | 120 | 40 | 100 | 2 |
-| calf（小腿） | LS100_WLK | 200 | 20 | 100 | 2 |
-| wheel（轮） | LS75_WL | 14 | 65 | 0（速度伺服） | b=1（速度环增益）+ armature（转子惯量）0.01 |
+| hip/thigh（髋/大腿） | LS100_WLA/WLH | 72 | 27 | **200** | **5** |
+| calf（小腿） | LS100_WLK | 136 | 14 | **200** | **5** |
+| wheel（轮） | LS75_WL | 20 | 65 | **无（厂家：没有此设置）** → 仿真 stiffness=0 | **3** + armature（转子惯量）0.01 |
 
-**⚠ 厂家 URDF 自带 limit 与 Excel 的口径差异（2026-10-13 记录）：** 厂家 URDF（`A01mw (3).urdf`，
-已同步为 `lingsi_d30w.urdf`）的 `<limit>` 与 `D30W关节电气参数.xlsx` **并不一致**，代码按用户确认
-（2026-10-13）以 **Excel 为准**统一覆盖：
+**⚠ 厂家 URDF 自带 limit 与 Excel 的口径差异（2026-10-13 记录，2026-10-14 翻转决策）：** 厂家 URDF
+（`A01mw (3).urdf`，已同步为 `lingsi_d30w.urdf`）的 `<limit>` 与 `D30W关节电气参数.xlsx` **并不一致**。
+2026-10-13 曾按用户确认以 Excel 为准覆盖；**2026-10-14 用户重新确认 effort/velocity 以 URDF 为准
+（PD 参数不变）**，即下表“URDF（采用）”列：
 
-| 关节组 | URDF 厂家 limit | Excel（采用） | 差异说明 |
+| 关节组 | URDF 厂家 limit（采用） | Excel（弃用） | 差异说明 |
 | --- | --- | --- | --- |
 | hip/thigh（髋/大腿） | 72 N·m / 27 rad/s | 120 N·m / 40 rad/s | Excel 激进 ~1.7×（疑为连续额定 vs 峰值口径） |
 | calf（小腿） | 136 N·m / 14 rad/s | 200 N·m / 20 rad/s | Excel 激进 ~1.5×（同上） |
-| wheel（轮） | 20 N·m / 65 rad/s | 14 N·m / 65 rad/s | Excel 保守（厂家轮子口径可能是峰值） |
+| wheel（轮） | 20 N·m / 65 rad/s | 14 N·m / 65 rad/s | URDF 略高（厂家轮子口径可能是峰值） |
+
+另：新导出 URDF 的 `leg3_hl_joint0`（左后髋）自带 `effort="100" velocity="20"`，与其余三个 hip 的
+72/27 不一致（疑为厂家笔误），按用户确认（2026-10-14）统一归一到 72/27，保持四腿对称。
 
 生效代码共两处，改口径时**必须两处同步**：
-1. `unitree.py::_prepare_geesun_dog_urdf()` 内三条 `re.sub` 把 URDF `<limit>` 重写为 Excel 值
-   （同时兼容两版 URDF 原值 72/27、136/14、20/65 与 100/20、160/15、14/65）；
+1. `unitree.py::_prepare_geesun_dog_urdf()` 内三条 `re.sub` 把 URDF `<limit>` 归一化为 URDF 口径值
+   （兼容两版 URDF 写法 72/27、136/14、20/65 与 100/20、160/15、14/65，分别映射到 72/27、136/14、20/65）；
 2. `unitree_actuators.py::UnitreeActuatorCfg_D30W` 的力矩-速度曲线（X1/X2 拐点、Y1/Y2 饱和力矩
-   = 120）+ `unitree.py` 各关节组实例覆盖（calf Y=200、wheel Y=14）。
+   = 72）+ `unitree.py` 各关节组实例覆盖（calf Y=136、wheel Y=20）。
 
-**sim2real（仿真到实机）注意：** 若实机驱动保护按 URDF 口径（72/136 N·m）执行，训练策略可能用到
-实机放不出来的力矩；保守做法是删除上面第 1 条的三条 regex 并把第 2 条的 Y 值同步调小
-（腿 72/136、轮保持 14），随后重新训练。
+**sim2real（仿真到实机）注意：** 现在仿真侧力矩/速度上限与 URDF 一致，若实机驱动保护也按 URDF
+口径（72/136/20 N·m）执行则无口径错配；但若实机实际能输出 Excel 口径（120/200 N·m），当前策略
+只会用到 URDF 以内、偏保守的力矩。
 
-> **为什么不用 Excel 的 KP=500/KD=5 最大值（2026-10-13 实测调参记录）：** Excel 给的是**上限**
+> **为什么不用 Excel 的 KP=500/KD=5 最大值（2026-10-13 实测调参记录，**该轮的采用值
+> KP=100/KD=2 已被 2026-10-14 厂家推荐值 KP=200/KD=5 取代，见下方判定**）：** Excel 给的是**上限**
 > 而非推荐值。显式 PD（explicit PD，力矩 = KP·误差 + KD·误差速度）在 dt=5 ms（毫秒）下对本机的
 > 小关节惯量会踩进**离散负阻尼区**（b·dt/J ≥ 2）：从精确保时的静止开始，0.1 N·m 级重力微扰在
-> 5 步内被指数放大到力矩饱和（±120 N·m）bang-bang（来回打满），腿 0.5 s 内被甩开 ±0.6 rad。
+> 5 步内被指数放大到力矩饱和（±120 N·m，当时 Y=120；现 Y=72 则饱和于 ±72）bang-bang（来回打满），腿 0.5 s 内被甩开 ±0.6 rad。
 > 实测矩阵（空中 PD 追踪，`--print_contact`）：KP=500/KD=5 发散、KP=60/KD=5 发散、轮速度伺服
 > b=5 轮速 0.5 s 内 ±20 rad/s（b·dt/J≈5）；**KP=100/KD=2 + 轮 b=1/armature 0.01 稳定**
 > （地面静立 2 s 下沉 <1 cm、水平漂移 <15 cm 后收敛，是训练关心的工况；空中无接触工况仍有
@@ -580,6 +931,18 @@ python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --num_steps 0
 > 调参脚本：`python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --headless \
 > --num_steps 300 --root_z 1.5 --amp_deg 0 --wheel_speed 0 --stiffness <KP> --damping <KD>`；
 > 诊断开关 `D30W_NO_COLLISION=1` 可临时移除全部碰撞体隔离接触力。
+
+> **厂家推荐工作点 KP=200/KD=5 + 轮 KD=3 的实测判定（2026-10-14，空中 PD 追踪**
+> `--root_z 1.5 --amp_deg 0`，日志 `/tmp/pd_air_200_5.log`**）：** 基座 z 稳定在 1.487–1.501 m
+> （无发散、无坠落），**未**触发 2026-10-13 记录的离散负阻尼爆炸（b·dt/J ≥ 2）——轮组
+> KD·dt/J = 3×0.005/0.01 = **1.5**，低于阈值 2 但余量只有 1.33×（旧 KD=1 为 0.5，余量 4×）。
+> 代价是**力矩饱和**：hip/thigh 频繁打满 ±72 N·m（KP=200 → 误差 0.36 rad 即饱和），calf 峰值
+> 92 N·m（上限 136，未饱和），轮组**恒 ±20 N·m 饱和**（KD=3 → 速度误差 >6.7 rad/s 即饱和）；
+> 关节在目标附近振荡（hip ±0.45 rad、thigh −0.65…−0.13、calf 0.525…1.15 rad），轮角因无 KP
+> （无位置保持）自由累积至 3.5 rad。**结论：厂家值可用（不发散），但比旧值 KP=100/KD=2 更硬、
+> 饱和更频繁 → 策略需要更大的动作平滑约束；实机侧这是 1 kHz（毫秒）电流环带宽内的板载伺服
+> 增益，仿真侧是 dt=5 ms 显式 PD，两者等效性以实机标定为准。** 换 PD 后必须 **fresh（重训）**：
+> 被控对象（plant）已变，续训等于中途换分布。
 
 注意：关节 origin（关节原点）来自厂家 CAD，**尚待实测标定**；关节限位（hip ±0.698、thigh [-3.054, 1.0]、
 calf [0.536, 2.775] rad）为厂家导出值。STEP → URDF（统一机器人描述格式）自动转换脚本
@@ -605,12 +968,191 @@ python scripts/geesun_dog/move_geesun_dog.py --variant lingsi_d30w --headless \
 ./unitree_rl_lab.sh -p --task Unitree-GeesunDog-LingsiD30W-Velocity
 # 3. 曲线：重点关注 Episode_Termination/base_contact（应接近 0）、
 #    Curriculum/terrain_levels_*、Curriculum/lin_vel_cmd_levels/*_max（应稳步上升）
-tensorboard --logdir logs/rsl_rl/unitree_geesun_lingsi_d30w
+tensorboard --logdir logs/rsl_rl   # 注意：必须是 logs/rsl_rl，不能写子目录，否则 TEXT 页的中文说明是空白
 # 4. 与 dog1 的消融对照只改一个变量：--task 任务名
 #    （Unitree-GeesunDog-Dog1-Velocity ↔ Unitree-GeesunDog-LingsiD30W-Velocity），
 #    其余全不动；用 diff 核对两个 velocity_env_cfg.py 的差异是否只有资产/足部/动作项
 ```
+**lingsi_d30w 楼梯 + height_scanner（高度扫描传感器）快速演示（2026-10-14 起）：** 为快速演示复杂地形能力，
+在 lingsi_d30w 上启用了 `pyramid_stairs`（金字塔楼梯）与 `height_scanner`（高度扫描传感器）。run（训练批次）
+目录、课程状态文件与监控闭环全部与基线隔离，基线曲线与 `curriculum_state.json`（课程状态文件）全程未被改动：
 
+| 项目 | 基线（flat / random_rough） | 本次演示（stairs + height_scanner） |
+| --- | --- | --- |
+| `experiment_name`（实验名） | `unitree_geesun_lingsi_d30w` | `unitree_geesun_lingsi_d30w_ht_stairs` |
+| 子地形（`proportion` 比例自动归一化后） | flat 33% / random_rough 67% | flat 20% / random_rough 40% / pyramid_stairs 40% |
+| 楼梯台阶高 | 无（楼梯被禁用） | `step_height_range=(0.05, 0.23)` m —— **与 GO2 逐字一致**（2026-10-14 起，严格消融对照）。D30W 轮子半径 0.095 m，0.23 m 踏步 = 轮径 1.21×，需靠 12 个腿关节把轮心抬过踏步 → 预期楼梯成功率显著低于 GO2，这正是要观测的消融差异 |
+| `height_scanner`（高度扫描传感器） | 关闭 | **critic-only privileged obs（仅特权评论家观测）**：critic 观测 263 维（含 187 维高度网格，0.1 m 分辨率 / 1.6×1.0 m）；policy（策略）观测**不变** |
+| 课程状态文件 | `logs/rsl_rl/unitree_geesun_lingsi_d30w/curriculum_state.json` | `logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs/curriculum_state.json` |
+| 启动方式 | 可 resume（续训） | **必须 fresh（重训）**：critic 观测 +187 维使 value（价值）网络输入层 shape 变化，旧 checkpoint（检查点）无法加载 |
+| 速度命令起点 | 已推进到 ±0.9 m/s | 从 cfg 的 ±0.1 m/s 重新起步（状态文件隔离，避免楼梯上命令跑赢能力） |
+
+```bash
+# 1. 训练（fresh，切勿加 --resume）
+./unitree_rl_lab.sh -t --task Unitree-GeesunDog-LingsiD30W-Velocity --num_envs 4096
+# 2. 6h 监控闭环（独立 state：outputs/monitor_d30w_ht/、outputs/autotune_d30w_ht/）
+nohup bash scripts/monitor_tb_check_d30w_ht.sh >> outputs/monitor_d30w_ht/monitor.log 2>&1 &
+# 3. 曲线（新增 Curriculum/terrain_performance_by_type/pyramid_stairs_{level,error_xy,error_yaw,success_rate}）
+tensorboard --logdir logs/rsl_rl   # 注意：必须是 logs/rsl_rl，不能写子目录，否则 TEXT 页的中文说明是空白
+# 4. 验证：单独回放楼梯地形，再跑全地形验收
+python scripts/rsl_rl/test_walk_torque.py --task Unitree-GeesunDog-LingsiD30W-Velocity \
+    --terrain stairs --steps 1000
+for terrain in flat random_rough stairs complex; do
+  python scripts/rsl_rl/test_walk_torque.py --task Unitree-GeesunDog-LingsiD30W-Velocity --terrain "$terrain" --steps 1000
+done
+```
+
+> **演示结束后的回滚（2 处）**：把 `rsl_rl_ppo_cfg.py` 的 `experiment_name` 改回
+> `unitree_geesun_lingsi_d30w`，把 `lingsi_d30w/velocity_env_cfg.py` 的 `state_file` 改回
+> `logs/rsl_rl/unitree_geesun_lingsi_d30w/curriculum_state.json`；楼梯与 height_scanner 按需保留或注释。
+>
+> **height_scanner 收益评估口径**：本演示是 critic-only（仅特权观测），只改善 value（价值）估计与训练
+> 稳定性，策略本身看不到高度 → 实机 Realsense D435i / MID360 部署**不需要**高度输入。若要评估
+> "策略真正使用高度"，把 `height_scan` 观测项从 `CriticCfg` 移到 `PolicyCfg`（policy 观测 +187 维），
+> 并保留本次 critic-only 演示作为对照组（ablation，消融）。
+>
+> **同一 GPU 只能跑一个 IsaacSim（仿真器）实例**：本演示与 dog1 / 基线 d30w 训练互斥，切换前先停旧进程。
+
+**10× 网络规模消融（2026-10-14 起，`unitree_geesun_lingsi_d30w_ht_stairs_10x`）：** 在上面 stairs +
+height_scanner（高度扫描传感器）演示的基础上，**只**把网络宽度从 `512-256-128` 放大 10 倍到
+`1536-1024-512`，并把 `--num_envs` 从 4096 提到 20096；楼梯、height_scanner、奖励项、课程项与全部
+PPO（近端策略优化）超参一律不动 → 与 `unitree_geesun_lingsi_d30w_ht_stairs` 的唯一差异就是网络规模
+（ablation，消融）。
+
+| 项目 | ht_stairs（对照组） | ht_stairs_10x（本次） |
+| --- | --- | --- |
+| `actor_hidden_dims` / `critic_hidden_dims`（隐藏层） | [512, 256, 128] | **[1536, 1024, 512]** |
+| 参数量（actor 演员 + critic 评论家 + noise std 噪声标准差） | 495,521 | **4,700,705**（9.5×） |
+| 网络输入维度 | policy 57 / critic 263 | policy 57 / critic 263（**不变**） |
+| `--num_envs`（并行环境数） | 4096 | **20096** |
+| 每迭代耗时 | 0.98 s | 3.63 s |
+| 吞吐 | 99,925 steps/s | **139,293 steps/s**（+39%） |
+| 显存 | ~28 GB | **20.1 GB / 32.6 GB** |
+| run 目录 / 课程状态 / 监控 state | `unitree_geesun_lingsi_d30w_ht_stairs` | `unitree_geesun_lingsi_d30w_ht_stairs_10x` |
+
+```bash
+# 1. 训练（fresh 重训，切勿 --resume：网络 shape 变了，旧 checkpoint 检查点无法加载）
+GEESUN_DOG_VARIANT=lingsi_d30w python scripts/rsl_rl/train.py --headless \
+    --task Unitree-GeesunDog-LingsiD30W-Velocity --num_envs 20096 \
+    --video --video_length 500 --video_interval 2400 --camera_view side
+# 2. 6h 监控闭环（独立 state：outputs/monitor_d30w_ht10x/、outputs/autotune_d30w_ht10x/）
+nohup bash scripts/monitor_tb_check_d30w_ht10x.sh >> outputs/monitor_d30w_ht10x/monitor.log 2>&1 &
+# 2b. 停止守护进程（daemon，后台监控循环）：先杀它的 sleep 子进程，再杀循环本体，避免孤儿 sleep
+MON_PID=$(pgrep -f 'monitor_tb_check_d30w_ht10x[.]sh')
+[ -n "$MON_PID" ] && { pkill -P "$MON_PID" sleep; kill "$MON_PID"; } || true   # 空则跳过（幂等，set -e 下也安全）
+pgrep -af 'monitor_tb_check'      # 期望：无输出（rc=1 = 无残留）
+ps -eo pid,etime,args | grep -E 'monitor_tb_check|train[.]py|play[.]py' | grep -v grep   # 期望：无输出
+# 重启守护进程（改过 MON_EXTRA_TRAIN_ARGS 后必须重启才生效）：
+#   nohup bash scripts/monitor_tb_check_d30w_ht10x.sh >> outputs/monitor_d30w_ht10x/monitor.log 2>&1 &
+
+# 3. 曲线（与对照组并排看）
+tensorboard --logdir logs/rsl_rl   # 注意：必须是 logs/rsl_rl，不能写子目录，否则 TEXT 页的中文说明是空白
+# 4. 验证：先单独回放楼梯，再跑全地形验收
+python scripts/rsl_rl/test_walk_torque.py --task Unitree-GeesunDog-LingsiD30W-Velocity \
+    --terrain stairs --steps 1000
+```
+
+> **为什么墙钟（wall-clock，实际耗时）只慢 3.7 倍而不是 9.5 倍**：每迭代约 94% 的时间花在 PhysX（物理引擎）
+> 仿真上，与网络规模无关。`--num_envs` 提到 20096 后每迭代样本量 ×4.9，learning（学习）时间从 0.057 s
+> 涨到 0.902 s（15.8×），但 collection（数据采集）只从 0.927 s 涨到 2.56 s，于是**吞吐反而提升 39%**。
+>
+> **必须盯的崩塌（collapse）信号**：`Loss/learning_rate` 贴到 1e-5 触底、`Policy/mean_noise_std` 不收缩、
+> `Curriculum/lin_vel_cmd_levels/x_max` 冻结在 ±0.1 —— 这是 KL-adaptive（KL 自适应）学习率崩塌的历史模式
+> （G1 2026-09-07 与 GO2 ht 消融都出现过）。监控的 autotune（自动调参）会自动降 LR（学习率）/ 提
+> `desired_kl`（期望 KL 阈值）；**不要**靠缩小网络宽度来救，否则消融对照失效。
+>
+> **回滚（3 处）**：`experiment_name` 改回 `unitree_geesun_lingsi_d30w`、`state_file` 改回
+> `logs/rsl_rl/unitree_geesun_lingsi_d30w/curriculum_state.json`、`actor_hidden_dims`/`critic_hidden_dims`
+> 按需改回 `[512, 256, 128]`。
+
+
+
+
+## 课程联动训练经验（2026-10-15）：双向爬坡原理与成功思路
+
+> lingsi_d30w（D30W 轮足）ht_stairs_10x 战役实战总结。验证数据：run
+> `2026-10-15_01-16-28`，`terrain_levels`（地形等级均值）0.52→6.0，`x_max`（纵向速度指令
+> 范围上界）0.2→0.45，全程升降并存（3301 个采样点中升 341 / 降 90）。
+
+### 双向爬坡（bidirectional climb）是什么原理
+
+**定义**：`terrain_levels` 是每个 env（并行环境）的当前地形难度等级，每 episode（回合）
+结束时按表现**双向滞回（hysteresis）调整**：
+
+```text
+episode 结束，对该 env 判定（terrain_levels_vel_strict）：
+  存活走完 且 err_xy < 0.22 且 err_yaw < 0.30  →  level + 1   （升级，门槛严）
+  摔倒  或  err_xy > 0.40 或  err_yaw > 0.45  →  level - 1   （降级，门槛宽）
+  其余                                          →  不动        （滞回带内稳定停留）
+```
+
+**为什么"双向"是课程成立的关键**：
+
+| 形态 | 后果 | 实例 |
+|---|---|---|
+| 只升不降 | 虚假繁荣：运气好/过拟合的 env 卡在过难地形，学不动也掉不下来 | — |
+| 只降不升 | **单向坍缩**：偶发摔倒逐步把所有 env 拖回 level 0 | 2026-10-14 实测 `terrain_levels` 0.51→0.087（P0 修复前 `move_down` 漏闸） |
+| **双向滞回** | 每个 env 始终停留在"略难但可完成"的难度（ZPD 最近发展区） | 修复后升 341 / 降 90，均值螺旋上爬 0.52→6.0 |
+
+升阈值（0.22）严于降阈值（0.40）构成**滞回带**：临界难度的 env 不在升级/降级边界上抖动
+（反复升降浪费样本），而是稳定停留直到能力真正超过上界。整体均值的"升多降少"就是能力
+增长的外在曲线——**爬坡速度 = 策略学习速度**，这正是课程学习（curriculum learning）的
+自适应机制。
+
+### 命令-地形联动（2026-10-14 拍板，全部默认关闭、仅 lingsi_d30w 启用）
+
+只靠双向滞回还不够：地形难度会跑在速度能力前面（err 阈值是绝对值，低速下太宽松）。
+解决方案是两个课程的三重联动：
+
+1. **命令课程先行**：`min_x_max_for_move_up=0.3` —— `x_max` 未到 0.3 m/s 前地形
+   **双向冻结**（`gate_open` 闸住 move_up 与 move_down，真冻结、零漂移）；
+2. **解冻后爬坡**：`x_max ≥ 0.3` 后地形恢复双向滞回升降；
+3. **爬坡让路**：`cmd_freeze_windows=2` —— terrain 均值每 +1 级（`cmd_freeze_level_gain`），
+   x 指令范围冻结 2 个评估窗口（不升不降、`streak` 清零），让策略在新难度稳定后再扩速度；
+   TB 曲线 `Curriculum/lin_vel_cmd_levels/x_frozen` 可见触发（实测触发 588 个采样点、峰值 2）。
+
+配套修复（缺一不可）：
+
+- **评估窗口**：`min_env_steps` 12000→6000。原值对应 ~500 iterations（迭代），大于多数 run
+  长度，门控评估从未触发、`x_max` 永远卡 0.1（run 碎片化的根因之一）；
+- **terrain_levels sidecar（方案 A）**：每 1000 全局步写 `terrain_levels_state.json`
+  （含 num_envs / max_level 元数据），resume（续训）恢复等级与 `env_origins`，不再从
+  `max_init_terrain_level`（0–2）重爬；fresh（重训）由 train.py 删除。num_envs / 地形行数
+  不匹配或文件损坏时自动降级为随机初始化（WARN，不中断）。
+
+### 验证方法（TB 四条曲线即可判定闭环健康）
+
+```text
+Curriculum/lin_vel_cmd_levels/streak     累计→清零→再攒（评估窗口在工作）
+Curriculum/lin_vel_cmd_levels/x_max      阶梯上升，到 0.3 是 terrain 解冻闸
+Curriculum/terrain_levels                x_max<0.3 时应水平直线（冻结）；解冻后螺旋上爬（升>降）
+Curriculum/lin_vel_cmd_levels/x_frozen   terrain 每 +1 级短暂 =2 再归 0
+```
+
+消融开关：`min_x_max_for_move_up=0.0` 或 `cmd_freeze_windows=0` 即回到旧单变量行为，
+配合 dog1/GO2 不传新参数（默认全关），对照实验干净。更多曲线释义见
+`doc/training_monitoring.md` §4 与 `outputs/monitor/curves.md`。
+
+## 提交历史导出（commit history export）
+
+两个零依赖（只用标准库）导出脚本，便于做变更审计（change audit，变更审计）：
+
+| 脚本 | 范围 | 输出 |
+|---|---|---|
+| `scripts/tools/export_commits_xlsx.py` | **全仓库**全部提交（commit，提交） | `outputs/commits/commits_<日期>.xlsx`（Excel，Excel 表格） |
+| `scripts/tools/export_file_history.py`（2026-10-14 新增） | **单个文件**的提交历史（`git log --follow`） | `doc/<文件名>_changelog.md`（含逐提交增/删行数、hunk（代码块）上下文定位、提交正文、当前未提交改动） |
+
+```bash
+# 默认目标：assets/robots/unitree.py -> doc/unitree.py_changelog.md
+python scripts/tools/export_file_history.py
+# 任意文件 + 自定义输出
+python scripts/tools/export_file_history.py --file scripts/rsl_rl/play.py --out doc/play_py_changelog.md
+python scripts/tools/export_file_history.py --no-working      # 不附「当前未提交改动」段
+```
+
+已生成的历史文档：[doc/unitree.py_changelog.md](doc/unitree.py_changelog.md)（`unitree.py` 共 10 次提交触及）。
+
+## 部署
 ## 部署
 
 模型训练完成后，需要在 Mujoco 中对训练好的策略进行 sim2sim 仿真测试，以检验模型性能。

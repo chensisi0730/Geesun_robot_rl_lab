@@ -260,15 +260,18 @@ class UnitreeActuatorCfg_D30W(UnitreeActuatorCfg):
     Va = 0.01
     # rotor inertia (not in the sheet)
     armature = 0.0
-    # PD gains: the sheet gives KP max 500 / KD max 5 (upper bounds, output-side). Gains are
-    # picked INSIDE that envelope for numerical stability of the explicit-PD actuator at the
-    # 5 ms physics step: the vendor maxima are deep in the negative-damping zone for these
-    # small joint inertias (b*dt/J >~ 2 -> exponential blow-up measured from a still start;
-    # KD=5 reproduced it, KD=2 did not). 100/2 keeps the leg joints in a measured-stable band
-    # (air PD tracking holds the stance to 0.001 rad; ground stand test holds 2 s with <1 cm
-    # sag). See README "lingsi_d30w PD 参数" for the tuning record.
-    stiffness = 100.0
-    damping = 2.0
+    # PD gains. VENDOR UPDATE 2026-10-14: KP = 200, KD = 5 on the leg joints (the sheet
+    # ``D30W关节电气参数.xlsx`` only rates the maxima KP<=500 / KD<=5; the vendor has now given
+    # the recommended operating point). NOTE these are the gains of the motor's ONBOARD
+    # 1 kHz servo (sheet: current-loop bandwidth 1000 Hz), while the sim applies the PD
+    # explicitly at dt = 5 ms. The explicit-PD discrete stability limit is KD*dt/J_eff < 2,
+    # and the 2026-10-13 measured matrix recorded blow-up for KD=5 (KP=500/KD=5 and
+    # KP=60/KD=5 both diverged) - KD, not KP, is the divergence driver. Verified on
+    # 2026-10-14 with scripts/geesun_dog/move_geesun_dog.py (see README "lingsi_d30w PD 参数"
+    # for the measured verdict of this exact pair); keep the sim value inside the verified
+    # stable band and treat the vendor pair as the hardware-side reference.
+    stiffness = 200.0
+    damping = 5.0
     friction = 0.0
 
 

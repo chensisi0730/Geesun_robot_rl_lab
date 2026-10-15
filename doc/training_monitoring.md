@@ -160,7 +160,7 @@ python scripts/rsl_rl/play.py --headless --task Unitree-Go2-Velocity \
 
 ```bash
 for terrain in flat random_rough stairs complex; do
-  python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity \
+  python scripts/rsl_rl/test_walk_torque.py --task Unitree-Go2-Velocity \
     --terrain "$terrain" --steps 1000 --checkpoint <checkpoint-path>
 done
 ```
@@ -226,8 +226,14 @@ done
   TB `Curriculum/terrain_levels` 是所有 env 当前等级的**均值**。
 - 设计意图：让每个 env 始终在"略难但可完成"的难度（ZPD）上训练；
   升降阈值不对称（滞回带）避免在边界反复抖动。
-- **地形等级不在 rsl-rl checkpoint 中**：resume 后按 `max_init_terrain_level`（0–2）
-  重新随机初始化、再自行爬回——监控把这种短期下降按 WARN 容忍（§1 瞬态规则）。
+- **地形等级不在 rsl-rl checkpoint 中**：未配置 `state_file` 的任务 resume 后按
+  `max_init_terrain_level`（0–2）重新随机初始化、再自行爬回——监控把这种短期下降按 WARN
+  容忍（§1 瞬态规则）。**2026-10-14 起 lingsi_d30w 启用 sidecar 持久化**（方案 A）：
+  `terrain_levels_vel_strict` 每 `state_save_interval`（默认 1000）全局步把每 env 等级写入
+  `<experiment>/terrain_levels_state.json`（含 num_envs / max_level 元数据），resume 时
+  `_load_terrain_state` 恢复等级并重算 env_origins；num_envs 或地形行数不匹配、文件损坏时
+  自动降级为随机初始化（WARN，绝不中断训练）；fresh run 由 train.py 删除该文件（与
+  `curriculum_state.json` 同规则）。
 
 ### 4.3 lin_vel_cmd_levels：全局窗口门控，只升不降，x/yaw 独立
 

@@ -66,21 +66,29 @@ COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     use_cache=False,
     sub_terrains={
         "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.1),
-        # Gentle curriculum stage (2026-10-13, remediation plan 1+2+3 after the 14700-iter
-        # collapse): light random_rough only (noise 0.01-0.03 m), stairs stay out for now -
-        # re-enable (commented below) once walking is stable here. Commands start at the
-        # cfg's +-0.1 m/s and widen via lin_vel_cmd_levels. Fresh (non-resume) training.
         "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
             proportion=0.2, noise_range=(0.01, 0.03), noise_step=0.01, border_width=0.25
         ),
-        # "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-        #     proportion=0.2,
-        #     step_height_range=(0.05, 0.23),
-        #     step_width=0.3,
-        #     platform_width=3.0,
-        #     border_width=1.0,
-        #     holes=False,
-        # ),
+        # DEMO STAGE (2026-10-14): pyramid_stairs (金字塔楼梯) re-enabled together with the
+        # height_scanner (高度扫描传感器) for the stairs demo. step_height_range is now the
+        # GO2 value (0.05, 0.23) VERBATIM - strict ablation (消融对照): same terrain, same PPO
+        # hyper-parameters, only the body differs (wheel-legged D30W vs legged GO2).
+        # NOTE the expected ablation outcome: the D30W wheel radius is 0.095 m
+        # (assets/robots/unitree.py, GEESUN_DOG_VARIANT_SPECS["lingsi_d30w"]), so the 0.23 m
+        # top riser is 1.21x the 0.19 m wheel diameter and must be cleared by the 12 leg joints
+        # alone -> pyramid_stairs_success_rate is expected to stay well below GO2's, with
+        # terrain_levels pinned at low rows and bad_orientation (摔倒终止) higher.
+        # With max_init_terrain_level=1 the first real riser is ~0.07 m. Proportions are
+        # auto-normalized by IsaacLab -> flat 20% / random_rough 40% / pyramid_stairs 40%.
+        # Fresh (non-resume) training: critic obs dim changes as well.
+        "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+            proportion=0.2,
+            step_height_range=(0.05, 0.23),
+            step_width=0.3,
+            platform_width=3.0,
+            border_width=1.0,
+            holes=False,
+        ),
     },
 )
 
@@ -289,10 +297,18 @@ class ObservationsCfg:
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100))
         joint_effort = ObsTerm(func=mdp.joint_effort, scale=0.01, clip=(-100, 100))
         last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))
-        # height_scanner = ObsTerm(func=mdp.height_scan,
-        #     params={"sensor_cfg": SceneEntityCfg("height_scanner")},
-        #     clip=(-1.0, 5.0),
-        # )
+        # DEMO (2026-10-14): height_scanner (高度扫描传感器) enabled as critic-only privileged
+        # obs (仅特权 critic 观测) - the same ablation convention as the GO2
+        # unitree_go2_velocity_ht run (robots/go2/velocity_env_cfg.py). The policy (策略) obs is
+        # deliberately left untouched, so the actor stays deployable on the real Realsense D435i /
+        # MID360 without changing the actor inputs. Critic obs grows by 187 dims (17x11 grid at
+        # 0.1 m over 1.6 x 1.0 m), which changes the value net input layer -> old checkpoints
+        # cannot be resumed, this run must start fresh.
+        height_scanner = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+            clip=(-1.0, 5.0),
+        )
 
         # def __post_init__(self):
         #     self.history_length = 5
@@ -357,11 +373,15 @@ class RewardsCfg:
     # -- feet (the dog URDF has no foot links: dog1 uses the calf tips, lingsi_d30w the wheels)
     feet_air_time = RewTerm(
         func=mdp.feet_air_time,
-        weight=0.1,
+        # 2026-10-15 reward-hack fix (stair slide -> leg lift): threshold 0.5 was punishing
+        # every normal lift (wheel air time 0.1-0.3 s < 0.5 s -> negative term on landing,
+        # confirmed by Episode_Reward/feet_air_time = -0.006). 0.1 s only filters jitter and
+        # the bigger weight makes lifting pay before the stairs reward does.
+        weight=0.5,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_BODY_NAMES),
             "command_name": "base_velocity",
-            "threshold": 0.5,
+            "threshold": 0.1,
         },
     )
     air_time_variance = RewTerm(
@@ -423,20 +443,41 @@ class CurriculumCfg:
     of terrain competence during the 2026-10-12 collapse.
     """
 
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_strict)
+    terrain_levels = CurrTerm(
+        func=mdp.terrain_levels_vel_strict,
+        params={
+            # terrain<->command coupling (2026-10-14): envs may only climb once the gated
+            # velocity range has reached the threshold below (locks terrain progress to
+            # command-range progress), and every +1.0 mean-level gain freezes the x range for
+            # 2 eval windows so the policy settles on the new terrain before widening again.
+            # 2026-10-15 00:57: relaxed 0.3 -> 0.2. Measured on run 2026-10-14_23-26-00: the
+            # gate metrics were 3x under thresholds (err_xy 0.074 vs 0.25) while terrain sat
+            # frozen at mean level 0.505 for 1400+ iterations - the 0.3 floor only delayed
+            # stairs training by ~1 h (x_max climbs one 0.05 step per ~29 min). 0.2 keeps a
+            # soft floor (== the demonstrated +-0.2 m/s competence) and restores the verified
+            # GO2/dog1 dual-curriculum behavior (those campaigns run this param at 0.0).
+            "min_x_max_for_move_up": 0.2,
+            "cmd_freeze_windows": 2,
+            # terrain-levels sidecar (2026-10-14, scheme A): resume restores the per-env levels
+            # instead of re-climbing from max_init_terrain_level; train.py removes it on fresh.
+            "state_file": "logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x/terrain_levels_state.json",
+        },
+    )
     terrain_performance_by_type = CurrTerm(func=mdp.terrain_performance_by_type)
     lin_vel_cmd_levels = CurrTerm(
         func=mdp.gated_lin_vel_cmd_levels,
         params={
-            # lingsi_d30w campaign state, under its own experiment_name dir so the dog1
-            # campaign can never cross-pollute this command-range state
-            "state_file": "logs/rsl_rl/unitree_geesun_lingsi_d30w/curriculum_state.json",
+            # lingsi_d30w stairs+height_scanner demo campaign state, under its own experiment_name
+            # dir: the flat/random_rough baseline has already widened lin_vel_x to +-0.9 m/s, and
+            # loading that state onto stairs would outrun the policy immediately (the exact
+            # 2026-10-12 collapse mode). Demo run therefore starts from the cfg's +-0.1 m/s.
+            "state_file": "logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x/curriculum_state.json",
             "lin_increment": 0.05,
             "yaw_increment": 0.1,
             "success_xy": 0.25,
             "success_yaw": 0.35,
             "min_success_rate": 0.90,
-            "min_env_steps": 12000,
+            "min_env_steps": 6000,
             "min_episodes": 4000,
             "hold": 2,
         },

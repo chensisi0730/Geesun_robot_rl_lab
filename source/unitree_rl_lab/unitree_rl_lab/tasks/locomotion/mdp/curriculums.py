@@ -27,6 +27,62 @@ def _episode_mean_error(env, env_ids, command_term, metric_name: str) -> torch.T
     return command_term.metrics[metric_name][env_ids] * max_command_step / episode_len
 
 
+def _load_terrain_state(env, terrain, state_file: str | None) -> None:
+    """Restore per-env terrain levels once per process (rsl-rl checkpoints do not store them).
+
+    Skipped with a warning when the saved ``num_envs`` / ``max_level`` do not match the current
+    setup (the env -> terrain-column mapping depends on num_envs, so a partial restore would
+    assign levels to the wrong columns).
+    """
+    if getattr(terrain, "_terrain_state_loaded", False):
+        return
+    terrain._terrain_state_loaded = True
+    if not state_file or not os.path.exists(state_file):
+        return
+    try:
+        with open(state_file) as f:
+            saved = json.load(f)
+        levels = saved.get("levels")
+        if (
+            levels is None
+            or int(saved.get("num_envs", -1)) != int(env.num_envs)
+            or int(saved.get("max_level", -1)) != int(terrain.max_terrain_level)
+        ):
+            print(
+                f"[WARN] terrain-levels state {state_file} does not match this run"
+                f" (num_envs/max_level changed); keeping the random initial levels."
+            )
+            return
+        device = terrain.terrain_levels.device
+        terrain.terrain_levels[:] = torch.tensor(levels, dtype=torch.long, device=device)
+        terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
+        print(
+            f"[INFO] Restored terrain levels from {state_file}:"
+            f" mean={float(terrain.terrain_levels.float().mean()):.2f} (saved at step {saved.get('step')})"
+        )
+    except Exception as exc:  # a corrupt sidecar must never abort training
+        print(f"[WARN] Could not read terrain-levels state {state_file}: {exc!r}")
+
+
+def _save_terrain_state(env, terrain, state_file: str | None) -> None:
+    """Persist per-env terrain levels so a restart does not send every env back to level 0."""
+    if not state_file:
+        return
+    try:
+        payload = {
+            "levels": [int(x) for x in terrain.terrain_levels.tolist()],
+            "num_envs": int(env.num_envs),
+            "max_level": int(terrain.max_terrain_level),
+            "step": int(env.common_step_counter),
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        path = Path(state_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload))
+    except Exception as exc:  # never let a failed write abort training
+        print(f"[WARN] Could not write terrain-levels state {state_file}: {exc!r}")
+
+
 def terrain_levels_vel_strict(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int],
@@ -35,19 +91,63 @@ def terrain_levels_vel_strict(
     move_up_yaw: float = 0.30,
     move_down_xy: float = 0.40,
     move_down_yaw: float = 0.45,
+    min_x_max_for_move_up: float = 0.0,
+    cmd_freeze_windows: int = 0,
+    cmd_freeze_level_gain: float = 1.0,
+    state_file: str | None = None,
+    state_save_interval: int = 1000,
 ) -> torch.Tensor:
-    """Move terrain level using survival and tracking error with a hysteresis band."""
+    """Move terrain level using survival and tracking error with a hysteresis band.
+
+    Two optional couplings with the velocity-command curriculum (both OFF by default so the
+    GO2 / dog1 campaigns keep their verified behavior; enable per task via CurriculumCfg):
+
+    * ``min_x_max_for_move_up``: terrain levels freeze (both up AND down) until the gated
+      command range has reached this x upper bound - a true freeze at the current levels
+      while the command curriculum climbs first.
+    * ``cmd_freeze_windows``: whenever the mean terrain level has gained
+      ``cmd_freeze_level_gain`` since the last freeze, the x command range is frozen (neither
+      widened nor narrowed) for this many gated-eval windows - a settle period on the new
+      terrain difficulty before the command range keeps widening. Triggered on the *mean*
+      level, not per-env level-ups (which happen on almost every episode during a climb).
+    """
     terrain = env.scene.terrain
     command_term = env.command_manager.get_term(command_name)
+    _load_terrain_state(env, terrain, state_file)
     err_xy = _episode_mean_error(env, env_ids, command_term, "error_vel_xy")
     err_yaw = _episode_mean_error(env, env_ids, command_term, "error_vel_yaw")
     valid = env.episode_length_buf[env_ids] > 0
     time_outs = getattr(env, "reset_time_outs", None)
     survived = torch.ones_like(valid) if time_outs is None else time_outs[env_ids].bool()
 
-    move_up = valid & survived & (err_xy < move_up_xy) & (err_yaw < move_up_yaw)
-    move_down = valid & ((~survived) | (err_xy > move_down_xy) | (err_yaw > move_down_yaw))
+    x_max = float(command_term.cfg.ranges.lin_vel_x[1])
+    gate_open = x_max >= min_x_max_for_move_up
+    move_up = valid & survived & (err_xy < move_up_xy) & (err_yaw < move_up_yaw) & gate_open
+    # gate freezes BOTH directions: with only move_up gated, occasional move_down events
+    # (falls, error tails) would slowly drain every env to level 0 - the intent is a true
+    # freeze of the terrain levels while the command range is still climbing.
+    move_down = valid & ((~survived) | (err_xy > move_down_xy) | (err_yaw > move_down_yaw)) & gate_open
     terrain.update_env_origins(env_ids, move_up, move_down & ~move_up)
+
+    if cmd_freeze_windows > 0:
+        mean_level = float(torch.mean(terrain.terrain_levels.float()))
+        last = getattr(command_term, "_cmd_freeze_last_mean", None)
+        if last is None:
+            command_term._cmd_freeze_last_mean = mean_level
+        elif mean_level - last >= cmd_freeze_level_gain:
+            command_term._cmd_freeze_last_mean = mean_level
+            command_term._cmd_freeze_windows = cmd_freeze_windows
+            print(
+                f"[INFO] Terrain mean level {mean_level:.2f} (+{mean_level - last:.2f}): freezing x command"
+                f" range for {cmd_freeze_windows} eval windows"
+            )
+
+    if state_file:
+        step = int(env.common_step_counter)
+        last_save = getattr(terrain, "_terrain_state_last_save", -(10**9))
+        if step - last_save >= state_save_interval:
+            terrain._terrain_state_last_save = step
+            _save_terrain_state(env, terrain, state_file)
     return torch.mean(terrain.terrain_levels.float())
 
 
@@ -263,7 +363,16 @@ def gated_lin_vel_cmd_levels(
         mean_err_xy = command_term._gate_err_xy / total
         mean_err_yaw = command_term._gate_err_yaw / total
 
-        if lin_rate >= min_success_rate and time_out_rate >= min_success_rate and mean_err_xy <= success_xy:
+        freeze = int(getattr(command_term, "_cmd_freeze_windows", 0))
+        if freeze > 0:
+            # terrain level-up freeze (terrain_levels_vel_strict sets _cmd_freeze_windows):
+            # the x range holds as-is and the streak restarts after the freeze, so the policy
+            # gets clean windows on the new terrain before the range widens again. The yaw
+            # gate stays independent and keeps evaluating.
+            command_term._cmd_freeze_windows = freeze - 1
+            command_term._gate_streak = 0
+            print(f"[INFO] x command range frozen ({freeze - 1} eval windows left)")
+        elif lin_rate >= min_success_rate and time_out_rate >= min_success_rate and mean_err_xy <= success_xy:
             command_term._gate_streak += 1
         else:
             command_term._gate_streak = 0
@@ -312,6 +421,7 @@ def gated_lin_vel_cmd_levels(
         "mean_err_yaw": command_term._gate_err_yaw / window,
         "streak": float(command_term._gate_streak),
         "yaw_streak": float(command_term._gate_yaw_streak),
+        "x_frozen": float(getattr(command_term, "_cmd_freeze_windows", 0)),
     }
 
 

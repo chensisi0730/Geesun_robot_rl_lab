@@ -10,7 +10,7 @@
 
 ## 2. 测量方法
 
-- 工具：`scripts/rsl_rl/test_flat_walk.py`（加载 checkpoint 进行确定性推理，记录每关节执行器实际施加力矩，输出 CSV（逗号分隔表格））；
+- 工具：`scripts/rsl_rl/test_walk_torque.py`（加载 checkpoint 进行确定性推理，记录每关节执行器实际施加力矩，输出 CSV（逗号分隔表格））；
 - 两种工况：
   - **flat（平地名义工况）**：纯平地、1000 步、全命令范围（±1.0 m/s），日常行走载荷；
   - **complex（复杂地形压力工况）**：混合复杂地形（random_rough（随机粗糙）+ pyramid_stairs（金字塔台阶））全覆盖难度、1000 步，冲击/压力包络；
@@ -81,11 +81,11 @@ mean_error_xy 0.104–0.106 m/s，mean_error_yaw 0.149–0.166 rad/s。
 
 ```bash
 # 平地名义工况
-conda run -n env_isaaclab_sim51 python -u scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python -u scripts/rsl_rl/test_walk_torque.py \
     --task Unitree-GeesunDog-Velocity --terrain flat --steps 1000
 
 # 复杂地形压力工况（在 unitree_actuators.py 临时把 Y1/Y2 调大后运行，测毕恢复）
-conda run -n env_isaaclab_sim51 python -u scripts/rsl_rl/test_flat_walk.py \
+conda run -n env_isaaclab_sim51 python -u scripts/rsl_rl/test_walk_torque.py \
     --task Unitree-GeesunDog-Velocity --terrain complex --steps 1000 \
     --output logs/rsl_rl/unitree_geesun_dog/<run>/complex_terrain_stats_unsaturated.csv
 ```

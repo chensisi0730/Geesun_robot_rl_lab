@@ -155,11 +155,24 @@ class UnitreeGeesunDogLingsiD30WPPORunnerCfg(BasePPORunnerCfg):
     the auto-tuner scope can never cross into the dog1 campaign.
     """
 
-    experiment_name = "unitree_geesun_lingsi_d30w"
+    # DEMO (2026-10-14): stairs + height_scanner run isolated in its own TensorBoard dir so the
+    # flat/random_rough baseline curves stay comparable, and so the d30w monitor
+    # (MON_RUNS_GLOB="unitree_geesun_lingsi_d30w/*") never auto-resumes this run. Revert to
+    # "unitree_geesun_lingsi_d30w" when the demo campaign ends.
+    #
+    # 10x ablation (2026-10-14): network width 512/256/128 -> 1536/1024/512, i.e. 495,521 params
+    # -> 4,700,705 params (9.5x). This is the exact width the GO2 ht ablation
+    # (unitree_go2_velocity_ht) already validated, so the width is a known-good size and the ONLY
+    # delta vs the ht_stairs run is the network scale. Hyper-parameters are deliberately left
+    # untouched for ablation parity; if the KL-adaptive LR collapses the monitor's auto-tuner
+    # (LR / desired_kl / entropy_coef knobs) intervenes automatically.
+    # Must start fresh: the value/policy net input layers change shape, model_*.pt from the
+    # 512/256/128 runs cannot be resumed.
+    experiment_name = "unitree_geesun_lingsi_d30w_ht_stairs_10x"
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
+        init_noise_std=1.20,
+        actor_hidden_dims=[1536, 1024, 512],
+        critic_hidden_dims=[1536, 1024, 512],
         activation="elu",
     )
     algorithm = RslRlPpoAlgorithmCfg(
