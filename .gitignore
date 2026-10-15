@@ -119,3 +119,9 @@ IsaacLab_v2.3.0/
 source/isaaclab/
 unitree_model/
 
+# WPS / LibreOffice 打开 Excel 时产生的锁文件与临时文件（lock/temp files），不要进 git
+.~*
+~$*
+*.tmp
+
+

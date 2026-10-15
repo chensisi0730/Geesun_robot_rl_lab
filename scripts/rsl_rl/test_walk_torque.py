@@ -17,14 +17,14 @@ The terrain is selected with ``--terrain``:
   with robots spawned on all difficulty rows (worst case for torque stats).
 
 Usage:
-    python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity \
+    python scripts/rsl_rl/test_walk_torque.py --task Unitree-Go2-Velocity \
         --checkpoint logs/rsl_rl/unitree_go2_velocity/<run>/model_7300.pt --steps 500
 
     # or automatically load the latest run / latest checkpoint:
-    python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity
+    python scripts/rsl_rl/test_walk_torque.py --task Unitree-Go2-Velocity
 
     # worst-case walking / torque statistics on complex terrain:
-    python scripts/rsl_rl/test_flat_walk.py --task Unitree-Go2-Velocity --terrain complex --steps 1000
+    python scripts/rsl_rl/test_walk_torque.py --task Unitree-Go2-Velocity --terrain complex --steps 1000
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -51,6 +51,15 @@ parser.add_argument(
         "'random_rough'/'stairs' = isolate one trained terrain type, "
         "'complex' = forced mixed rough terrain (worst-case walking/torque stats)."
     ),
+)
+parser.add_argument("--stair_height", type=float, nargs=2, default=None, metavar=("MIN", "MAX"),
+                    help="Override the stair riser height range (m) for the 'stairs'/'complex' presets.")
+parser.add_argument(
+    "--env_cfg_file",
+    type=str,
+    default=None,
+    help="Replay with a run's saved env cfg snapshot (params/velocity_env_cfg.py) instead of the registered "
+    "task cfg. Needed when the task cfg changed after the checkpoint was trained (obs dimensions).",
 )
 parser.add_argument("--num_envs", type=int, default=64, help="Number of environments to simulate.")
 parser.add_argument("--steps", type=int, default=500, help="Number of policy steps to record.")
@@ -98,71 +107,9 @@ from isaaclab_tasks.utils import get_checkpoint_path
 import unitree_rl_lab.tasks  # noqa: F401
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
 
-import isaaclab.terrains as terrain_gen
-
-# Mixed rough terrain matching the GO2 training types and limits.
-COMPLEX_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
-    size=(8.0, 8.0),
-    border_width=20.0,
-    num_rows=5,
-    num_cols=12,
-    horizontal_scale=0.1,
-    vertical_scale=0.005,
-    slope_threshold=0.75,
-    difficulty_range=(0.0, 1.0),
-    curriculum=True,
-    use_cache=False,
-    sub_terrains={
-        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.1),
-        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-            proportion=0.2, noise_range=(0.01, 0.06), noise_step=0.01, border_width=0.25
-        ),
-        # "boxes" (ablation 2026-10-12: removed with the training set):
-        # terrain_gen.MeshRandomGridTerrainCfg(
-        #     proportion=0.2, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
-        # ),
-        "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.2,
-            step_height_range=(0.05, 0.23),
-            step_width=0.3,
-            platform_width=3.0,
-            border_width=1.0,
-            holes=False,
-        ),
-    },
-)
-
-
-def single_terrain_cfg(mode: str) -> terrain_gen.TerrainGeneratorCfg:
-    """Build an isolated test terrain using the same limits as GO2 training."""
-    if mode == "random_rough":
-        terrain = terrain_gen.HfRandomUniformTerrainCfg(
-            proportion=1.0, noise_range=(0.01, 0.06), noise_step=0.01, border_width=0.25
-        )
-    elif mode == "stairs":
-        terrain = terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=1.0,
-            step_height_range=(0.05, 0.23),
-            step_width=0.3,
-            platform_width=3.0,
-            border_width=1.0,
-            holes=False,
-        )
-    else:
-        raise ValueError(f"Unsupported terrain: {mode}")
-    return terrain_gen.TerrainGeneratorCfg(
-        size=(8.0, 8.0),
-        border_width=20.0,
-        num_rows=5,
-        num_cols=4,
-        horizontal_scale=0.1,
-        vertical_scale=0.005,
-        slope_threshold=0.75,
-        difficulty_range=(0.0, 1.0),
-        curriculum=True,
-        use_cache=False,
-        sub_terrains={mode: terrain},
-    )
+# Shared evaluation terrain presets (评估地形预设) - see scripts/rsl_rl/terrain_presets.py
+from snapshot_cfg import load_snapshot_env_cfg
+from terrain_presets import apply_terrain
 
 
 def resolve_checkpoint(agent_cfg) -> str:
@@ -180,48 +127,32 @@ def main():
         raise ValueError("--steps must be greater than --warmup")
 
     # parse configuration (use the play env config: fewer envs, no terrain curriculum)
-    env_cfg = parse_env_cfg(
-        args_cli.task,
-        device=args_cli.device,
-        num_envs=args_cli.num_envs,
-        use_fabric=not args_cli.disable_fabric,
-        entry_point_key="play_env_cfg_entry_point",
-    )
+    if args_cli.env_cfg_file:
+        env_cfg = load_snapshot_env_cfg(
+            args_cli.env_cfg_file,
+            device=args_cli.device,
+            num_envs=args_cli.num_envs,
+            use_fabric=not args_cli.disable_fabric,
+        )
+        print(f"[INFO] Using snapshot env cfg from: {os.path.abspath(args_cli.env_cfg_file)}")
+    else:
+        env_cfg = parse_env_cfg(
+            args_cli.task,
+            device=args_cli.device,
+            num_envs=args_cli.num_envs,
+            use_fabric=not args_cli.disable_fabric,
+            entry_point_key="play_env_cfg_entry_point",
+        )
     if not args_cli.full_command_range:
         env_cfg.commands.base_velocity.ranges.lin_vel_x = (-0.25, 0.25)
         env_cfg.commands.base_velocity.ranges.lin_vel_y = (-0.25, 0.25)
 
-    # Apply terrain selection (--terrain). 'flat' keeps the original behavior;
-    # 'play' leaves the play env cfg terrain untouched; 'complex' forces a mixed
-    # rough terrain for worst-case walking / torque statistics.
-    if args_cli.terrain == "flat":
-        # Override terrain to flat only
-        flat_terrain_cfg = terrain_gen.TerrainGeneratorCfg(
-            size=(8.0, 8.0),
-            border_width=20.0,
-            num_rows=2,
-            num_cols=1,
-            horizontal_scale=0.1,
-            vertical_scale=0.005,
-            slope_threshold=0.75,
-            difficulty_range=(0.0, 0.0),
-            use_cache=False,
-            sub_terrains={
-                "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=1.0),
-            },
-        )
-        env_cfg.scene.terrain.terrain_generator = flat_terrain_cfg
-    elif args_cli.terrain == "complex":
-        env_cfg.scene.terrain.terrain_generator = COMPLEX_TERRAIN_CFG
-        # Spawn each env on a random difficulty row (easiest -> hardest)
-        env_cfg.scene.terrain.max_init_terrain_level = COMPLEX_TERRAIN_CFG.num_rows - 1
-    elif args_cli.terrain in {"random_rough", "stairs"}:
-        isolated_cfg = single_terrain_cfg(args_cli.terrain)
-        env_cfg.scene.terrain.terrain_generator = isolated_cfg
-        env_cfg.scene.terrain.max_init_terrain_level = isolated_cfg.num_rows - 1
+    # Apply terrain selection (--terrain) from the shared presets (地形预设). 'flat' keeps the
+    # original behavior; 'play' leaves the play env cfg terrain untouched; 'complex' forces a
+    # mixed rough terrain for worst-case walking / torque statistics. Sub-terrain (子地形) limits
+    # are read from the task's own cfg, so every robot is tested on the limits that fit its asset.
+    print(f"[INFO] Terrain mode: {apply_terrain(env_cfg, args_cli.terrain, stair_height=args_cli.stair_height)}")
     env_cfg.curriculum = None
-    # 'play': no override, use the task's play env terrain as configured
-    print(f"[INFO] Terrain mode: {args_cli.terrain}")
 
     agent_cfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
