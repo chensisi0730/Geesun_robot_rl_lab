@@ -1,12 +1,11 @@
-实体机器人是G1 edu u6-zl旗舰版D ，配备因时五指灵巧手RH56DFTP，12个自由度，上半身手臂14个DOF;下半身腿部12个DOF，腰部3个DOF，整机自由度是41。,有深度相机Intel Realsense D435i 和3D激光雷达LIVOX-MID360，
-GO2是GO2 EDU-ZL ，3D激光雷达MI3-360,
 在CONDA环境env_isaaclab_sim51中，训练G1和GO2, Unitree-GeesunDog-LingsiD30W-Velocity在复杂地形行走和速度跟踪的能力，评估启用 height_scanner的收益和风险。
 守护进程scripts/monitor_tb_check.py，每6个小时监控TensorBoard里面的各项训练曲线，发现训练曲线恶化后，自动停止训练，并修改代码，调整超参数，重新训练。
 要求改动尽量小，方便做消融对照实验。
 训练完成后，如何验证训练结果？`unitree_rl_lab` 的 editable 安装实际没有指向本仓库的问题还存在吗
 用中文思考和回答。
 
-重点训练task Unitree-GeesunDog-LingsiD30W-Velocity,总结整个地形和terrain_levels 和lin_vel_cmd_levels的设计逻辑，使用图表展示；
+重点训练task Unitree-GeesunDog-LingsiD30W-Velocity,每条腿上有4个电机，共有 16 个自由度, 摄像头:130度广角 640*360 30fps,激光雷达:Airy 96线 ,测距： 30m@10%反射率,视场角： 视场角： 水平360° × 垂直90°（半球）可连续攀爬台阶高度20cm . https://nv6cj6srn6f.feishu.cn/docx/BmxgdQpNcoP6ryx0cJDcioilnag  查看产品文档.
+总结整个地形和terrain_levels 和lin_vel_cmd_levels的设计逻辑，使用图表展示；
 terrain_levels 和lin_vel_cmd_levels的升级和降级的逻辑是什么？他们之间的关系是什么？如何稳定提高terrain_levels和lin_vel_cmd_levels？
 课程terrain_levels升级后，lin_vel_cmd_levels或者x_max降级,是否合理？
 terrain_levels move_up 加条件「x_max ≥ 0.3 才升地形」, 升级后冻结 x_max 2 个评估窗口(不升不降).

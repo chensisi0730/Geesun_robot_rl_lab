@@ -27,6 +27,7 @@
 - [策略测试与力矩统计](#策略测试与力矩统计)
 - [验证训练结果](#验证训练结果)
 - [Geesun Dog 导入与全关节运动演示（dog1）](#geesun-dog-导入与全关节运动演示dog1)
+- [传感器仿真建模：Airy 96线激光雷达（2026-10-15）](#传感器仿真建模airy-96线激光雷达2026-10-15)
 - [部署](#部署)
 - [致谢](#致谢)
 
@@ -130,22 +131,7 @@
         --task Unitree-GeesunDog-LingsiD30W-Velocity    --num_envs 20096 \
         --resume --load_run 2026-10-14_08-47-04 2>&1 | tee /tmp/train_GeesunDog_resume.log 
 
-    # 训练同时录制视频：每 100 迭代一段 10 s（500 步 @ 50 fps），相机侧向跟拍机器狗。
-    # video_interval 的单位是 env.step() 调用次数 = 迭代数 × num_steps_per_env(24)，见「验证训练结果 §0」
-    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
-        --task Unitree-GeesunDog-LingsiD30W-Velocity --num_envs 20096 --resume --load_run 2026-10-15_01-16-28 \
-        --video --video_length 500 --video_interval 10000 --camera_view side 2>&1 | tee /tmp/train_video.log
-
-    # ⚠ 下面是 2026-10-14 当时的历史命令：run 2026-10-14_23-26-00 已停在 model_7900.pt，
-    # 当前战役最新 run 是 2026-10-15_01-16-28（model_15300.pt）。今天续训请用下面「当前推荐」版。
-    # 从旧 run 续训前必须先备份/移走 terrain_levels_state.json 与 curriculum_state.json
-    # （sidecar，旁路状态文件；见「验证训练结果 § 前置检查」），否则旧策略会被灌入最新战役的地形等级。
-
-    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
-    --task Unitree-GeesunDog-LingsiD30W-Velocity --num_envs 20096 \
-    --resume --load_run 2026-10-15_01-16-28 \
-    --video --video_length 250 --video_interval 10000 --video_start_frac 0.5 \
-    --video_start_episode_frac 0.35 --camera_view diag --camera_distance 0.57 --camera_height 1.2 --camera_focal 21            
+          
             
 
     # 当前推荐（2026-10-15 起）：续训最新 run，录像参数与守护进程逐字一致（camera 三项等于默认值，可省略）
@@ -362,6 +348,24 @@ mv terrain_levels_state.json terrain_levels_state.json.bak_<ITER>
 
 
 ### 0. 训练时录制视频（in-training video recording）——**已重新启用（re-enabled，2026-10-14 23:45，5 s 短片）**
+
+    # 训练同时录制视频：每 100 迭代一段 10 s（500 步 @ 50 fps），相机侧向跟拍机器狗。
+    # video_interval 的单位是 env.step() 调用次数 = 迭代数 × num_steps_per_env(24)，见「验证训练结果 §0」
+    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
+        --task Unitree-GeesunDog-LingsiD30W-Velocity --num_envs 20096 --resume --load_run 2026-10-15_01-16-28 \
+        --video --video_length 500 --video_interval 10000 --camera_view side 2>&1 | tee /tmp/train_video.log
+
+    # ⚠ 下面是 2026-10-14 当时的历史命令：run 2026-10-14_23-26-00 已停在 model_7900.pt，
+    # 当前战役最新 run 是 2026-10-15_01-16-28（model_15300.pt）。今天续训请用下面「当前推荐」版。
+    # 从旧 run 续训前必须先备份/移走 terrain_levels_state.json 与 curriculum_state.json
+    # （sidecar，旁路状态文件；见「验证训练结果 § 前置检查」），否则旧策略会被灌入最新战役的地形等级。
+
+    conda run -n env_isaaclab_sim51 python scripts/rsl_rl/train.py --headless \
+    --task Unitree-GeesunDog-LingsiD30W-Velocity --num_envs 20096 \
+    --resume  \
+    --video --video_length 250 --video_interval 10000 --video_start_frac 0.8 \
+    --video_start_episode_frac 0.85 --camera_view diag --camera_distance 0.57 --camera_height 3 --camera_focal 21  \
+    --load_run 2026-10-15_01-16-28
 
 > **当前状态：** `scripts/monitor_tb_check_d30w_ht10x.sh` 第 50 行**已启用**录像：
 > `export MON_EXTRA_TRAIN_ARGS="--video --video_length 250 --video_interval 2400 --video_start_frac 0.5 --video_start_episode_frac 0.35 --camera_view diag --camera_distance 0.57 --camera_height 1.2 --camera_focal 21"`
@@ -1133,6 +1137,187 @@ Curriculum/lin_vel_cmd_levels/x_frozen   terrain 每 +1 级短暂 =2 再归 0
 配合 dog1/GO2 不传新参数（默认全关），对照实验干净。更多曲线释义见
 `doc/training_monitoring.md` §4 与 `outputs/monitor/curves.md`。
 
+### 奖励修正（2026-10-15）：feet_air_time（腾空时间）治本抬腿，防 reward hacking（奖励作弊）
+
+**背景**：pyramid_stairs（金字塔楼梯）上策略找到作弊解——侧向滑行下楼而非抬腿攀爬。
+根因是 `feet_air_time` **反抬腿**：IsaacLab 公式 `sum((air_time - threshold) × 首次触地)`，
+原 `threshold=0.5` 下轮子正常抬升腾空 0.1~0.3 s，每次落地都 `(air_time-0.5)<0` **倒扣**
+（TB 实测 `Episode_Reward/feet_air_time` = -0.006，贡献为负）。
+
+**修正**（`lingsi_d30w/velocity_env_cfg.py`，dog1/GO2 不动）：
+
+| 参数 | 原值 | 现值 | 理由 |
+|---|---|---|---|
+| `weight` | 0.1 | **0.5** | 让抬腿在楼梯奖励兑现前就有收益 |
+| `threshold` | 0.5 | **0.05**（2026-10-15 两次：0.5→0.1→0.05） | 0.1 时该项仍为负（多数轮抬腾空 <0.1 s）；0.05 只滤接触抖动 |
+
+**验收指标**（每 6 h 看四条曲线，防作弊转移）：`Episode_Reward/feet_air_time` 转正（治本信号）、
+`pyramid_stairs_success_rate` > 0.85、`Episode_Reward/feet_slide`（脚滑惩罚）下降、
+`track_lin_vel_xy`（线速度跟踪）不明显变差（变差=引入兔子跳等新作弊）。候选后续项：
+`air_time_variance`（-1.0，抑制交替抬腿）放松到 -0.5；对准侧滑则加 `track_ang_vel_z` 权重
+（0.75→1.2，仅当定量确认 hack 形态是转向侧滑）。
+
+**训练时开启录像**（2026-10-15 起恢复常规）：5 s 短片、diag（斜后方高俯拍）跟拍，每 100 迭代一段：
+
+```bash
+python -u scripts/rsl_rl/train.py --headless --task Unitree-GeesunDog-LingsiD30W-Velocity \
+  --num_envs 20096 --resume --load_run <RUN> --checkpoint model_<N>.pt \
+  --video --video_length 250 --video_interval 2400 --video_start_frac 0.5 \
+  --video_start_episode_frac 0.35 --camera_view diag --camera_distance 0.57 \
+  --camera_height 1.2 --camera_focal 21
+```
+
+## 传感器仿真建模：Airy 96线激光雷达（2026-10-15）
+
+在仿真里建模实机传感器（D30W 轮腿式平台），接入 policy（策略）观测并做消融评估。
+**详细实测记录见 `source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/sensors/AIRY_PERFORMANCE.md`**，
+本节只给结论与复现方式。
+
+### 一、硬件规格与建模决策
+
+| 项 | 实机 PRO 版 | 仿真建模 | 说明 |
+|---|---|---|---|
+| 激光雷达数量 | **2 台**（头部 + 尾部） | **1 台**（头部） | **实测约束**，见第三节 |
+| 线数（垂直） | 96 | 96 | 不可降，这是台阶高度分辨率的来源 |
+| 视场角 | 水平 360° × 垂直 90° 半球 | 同（**朝下**，已验证） | |
+| 测距 | 30 m @ 10% 反射率 | `max_distance=30.0` | 近裁剪 0.2 m |
+| 水平角分辨率 | 未公开（数字扫描） | **0.8°** | 唯一可调旋钮，只影响显存 |
+| 摄像头 | 2 个，130° 广角 640×360 @ 30fps，普通 RGB | **暂不建模** | 无深度；渲染路线会把训练规模打到几百 envs |
+
+**路线选择：光线投射（`MultiMeshRayCasterCfg` + `LidarPatternCfg`），不渲染图像** —— 保住 4096 envs 训练规模。
+
+⚠️ **必须用 `MultiMeshRayCasterCfg`，不能用 `RayCasterCfg`**：
+`RayCaster` 在只给一个 `mesh_prim_paths` 时**只读该路径下第一个匹配的 `UsdGeomMesh`**，
+其余网格被静默丢弃。实测：地面先生成时 94% 命中点落在地面，`z > 0.10 m` 的障碍完全检测不到。
+对只扫地面的 `height_scanner` 够用，对 LiDAR 完全不可用。
+
+**半球朝向已实测确认为「朝下」**（规格只写"垂直90°半球"，未指明哪个半球，是唯一未验证假设）：
+
+```bash
+python scripts/diagnose/verify_airy_lidar.py --headless --envs 1
+# [VERDICT] DOWN: ground covered out to 15.11 m -> the 90 deg hemisphere points DOWN
+```
+
+若实机确认是朝上，只改 `airy_cfg.py` 的 `AIRY_VERTICAL_FOV_RANGE = (0.0, 90.0)`，其余不动。
+
+### 二、BEV 观测：720 维极坐标最大高度栅格
+
+点云 86,400 rays/env 无法直接进观测，故投影为**极坐标最大高度栅格**：
+36 方位扇区（360° 全向，10°/bin）× 20 距离环（log 间距，近密远疏）= **720 维**。
+
+关键设计：**高度取世界系 z**（绝对障碍高度，不随机器人俯仰抖动），**方位/距离才转 body frame**（跟随航向）。
+
+几何精度实测（`scripts/diagnose/verify_airy_bev.py`，4/4 通过）：
+
+```
+step 0.15 m@3m  → 实测 0.150（误差 0）      low box 0.30 m@5m → 实测 0.277
+tall_obstacles_saturate_at_sensor_height   forward_rising_profile(step<box<wall)
+```
+
+⚠️ **固有限制：高度天花板 = 传感器安装高度（0.5 m）**。墙（2.0 m）与高箱（0.9 m）实测都是 0.500，
+**不是缺陷而是物理正确** —— 半球朝下时不可能看到高于自身安装高度物体的顶面。
+对爬楼梯无影响（台阶 0~0.2 m），但将来若需感知"高于 0.5 m 的障碍"（上高台、越栏杆），
+朝下半球的 Airy 做不到，需调整安装高度或改双半球。
+
+### 三、性能实测（RTX 5090 / 32 GB，50 Hz 预算 = 20 ms/step）
+
+| envs | h_res | rays/env | 总 rays | ms/step | Mrays/s | 占预算 | 显存 | 结果 |
+|---|---|---|---|---|---|---|---|---|
+| 512 | 0.4° | 86,400 | 44.2 M | 0.35 | 125,392 | 1.8% | — | OK |
+| 4096 | 0.4° | 86,400 | 353.9 M | 0.39 | 901,361 | 2.0% | 需再分配 3.96 GiB 失败 | ❌ OOM |
+| **4096** | **0.8°** | **43,200** | **176.9 M** | **0.44** | **398,382** | **2.2%** | **26.2 / 32.6 GB** | ✅ |
+
+**三个结论**：
+
+1. **算力完全可行，余量约 25 倍** —— 4096 envs 下只占控制预算 ~2%
+2. **512→4096 开销几乎不变**（0.35→0.39 ms），GPU 并行已饱和。
+   ⚠️ 反过来 **64 envs 反而更慢（1.53 ms）**，是小规模固定开销主导 ——
+   **小规模测量数字不能用来外推，必须在目标 env 数上实测**
+3. **真正的瓶颈是显存**，且是硬约束
+
+由此确定两项参数：
+
+- **`AIRY_HORIZONTAL_RES`: 0.4° → 0.8°**。降分辨率**不省算力**（96 条垂直线才是计算主导），
+  纯粹省显存，且精度无损：0.8° 时一个 10° 方位 bin 仍有 **12.5 个采样点**，
+  栅格取 bin 内**最大值**，台阶棱边是面状目标而非点状目标；命中率 `0.4°→98.68%`、`0.8°→98.68%` 完全一致。
+- **LiDAR 实例数：2 台 → 1 台**。Airy 本身 360° 全向，1 台已覆盖前后，
+  第 2 台**不增加任何信息**却要多吃 ~8~12 GB → 必然 OOM。这是实测硬约束，不是建模偷懒。
+
+⚠️ **显存不能用"rays × 3 × 4 bytes × 2 buffers"估算**：该朴素公式对实测 26.2 GB 只算出 **4.0 GB**
+（漏掉 per-env mesh BVH 与 ray-info 缓冲，**低估 6.6 倍**），是比没有保护更危险的假保护。
+代码里改用两点实测标定 `2.0 GB + 1.4e-7 × rays × envs`，且在高 ray 数处故意高估，宁可误报也不静默 OOM。
+
+### 四、消融配置（4 个 task 已注册并通过冒烟测试）
+
+四个 task **共享同一份 policy 观测（实测 57 维）**，只改 critic 特权观测，
+因此 actor 结构不变、已训 checkpoint 的 actor 可复用：
+
+| 配置 | task id 后缀 | critic 外部感知 | critic 维度（实测） |
+|---|---|---|---|
+| **A** 基线 | `""`（现有 task） | height_scanner 187 | **263** |
+| **B** 替代 | `-AiryReplace` | Airy BEV 720（无 height_scanner） | **796** |
+| **C** 叠加 | `-AiryStacked` | 187 + 720 | **983** |
+| **D** 下界 | `-ProprioOnly` | 无 | **76** |
+
+- **B 是终点形态**：去掉仿真特权信息，感知形状与实机一致，可真正 sim2real
+- **D 是下界**：完全无外部感知的性能下限，LiDAR 必须超过它才有意义
+- ⚠️ 改 critic 观测会改变 value net 输入层，**四个配置都必须从头训**，checkpoint 之间不可迁移
+
+冒烟测试结果（4/4 通过，实测维度而非推导）：
+
+```
+config             pol   crit  act           hits   bev_std  bev_max  ms/step  verdict
+A baseline          57    263   16              -       nan      nan    32.42  OK
+B airy_replace      57    796   16 161351062/1382400    0.1947    0.960    36.17  OK
+C airy_stacked      57    983   16    161351048/1382400    0.1947    0.942    38.65  OK
+D proprio_only      57     76   16              -       nan      nan    31.02  OK
+```
+
+⚠️ **基线必须保持零改动**：LiDAR 只经 `RobotSceneCfgAiry`（scene 子类）引入，仅 B/C 使用。
+三个原因：① 消融前提是 A 不带 LiDAR；② 基线改动会让**所有已训 checkpoint 作废**（263→983）；
+③ 基线白占 ~26 GB 显存读一个它不用的传感器。
+
+### 五、复现命令
+
+```bash
+# 传感器建模 + 半球朝向 + 几何精度
+python scripts/diagnose/verify_airy_lidar.py --headless --envs 1
+
+# 性能实测（务必在目标 env 数上跑，小规模数字不可外推）
+python scripts/diagnose/verify_airy_lidar.py --headless --envs 4096 --horizontal_res 0.8
+
+# BEV 栅格 vs 已知几何
+python scripts/diagnose/verify_airy_bev.py --headless
+
+# 4 个配置的端到端冒烟（真实建 env 并 step）
+python scripts/diagnose/smoke_env_obs.py --headless --num_envs 32 --steps 30
+```
+
+产物落在 `outputs/verify_airy*/`（`stats.json` / `bev.png` / 点云 CSV·PLY）。
+
+### 六、踩坑记录（都是实测踩出来的，别照抄直觉）
+
+1. **`RayCasterCfg` 只读第一个网格** —— 94% 命中落在地面，障碍全丢。必须用 `MultiMeshRayCasterCfg`
+2. **半球朝向靠猜会全错** —— 必须渲染俯视图/侧视图用"地面覆盖半径"判定
+3. **`imshow` + `extent` 把 log 间距的距离环线性铺开** —— 台阶 r=3 被画到 y≈9，
+   数据正确但图**误导判断**。必须用 `pcolormesh` 按真实 bin 边界绘制
+4. **显存估算公式低估 6.6 倍** —— 朴素公式给出假保护，`0.4°` 时断言不触发但实际 OOM。必须实测标定
+5. **同进程建第 2 个 env 触发 `UsdExpiredPrimAccessError`（C++ abort，Python 无法捕获）** ——
+   每个配置必须独立子进程；且 `simulation_app.close()` 会挂起，需 `os._exit(0)`
+6. **`um.group_obs_term_dims` 不存在** —— 真实属性是私有的 `om._group_obs_term_dim`
+7. **`env.num_actions` 不存在** —— 用 `sum(env.action_manager.action_term_dim)`
+8. **D30W 是 16 个驱动关节，不是 12** —— policy 57 维、action 16 维，实测得来，不要按 12 推算
+
+### 七、尚未实施
+
+- **域随机化**：`AIRY_RANDOMISATION` 已定义外参 ±3 cm/±2°、测距噪声、丢点率 0~15%、延迟 0~50 ms
+  等范围，但**尚未接入** `randomize_ray_caster` 事件项
+- **policy 接入**：当前仅 critic 观测，policy 仍是 57 维 proprioception。
+  接入 policy 会让**所有旧 checkpoint 作废**
+- **4096 envs 是临界点**：LiDAR 本身 26.2/32.6 GB，尚未计入 D30W articulation buffers，
+  真实训练大概率要降到 2048 envs
+- **RGB 摄像头**：已确认暂不接入策略
+
 ## 提交历史导出（commit history export）
 
 两个零依赖（只用标准库）导出脚本，便于做变更审计（change audit，变更审计）：
@@ -1216,3 +1401,5 @@ cd unitree_rl_lab/deploy/robots/g1_29dof/build
 - [mujoco](https://github.com/google-deepmind/mujoco.git)：提供强大的仿真功能。
 - [robot_lab](https://github.com/fan-ziqi/robot_lab)：项目结构与部分实现的参考。
 - [whole_body_tracking](https://github.com/HybridRobotics/whole_body_tracking)：用于运动跟踪的多功能人形机器人控制框架。
+
+

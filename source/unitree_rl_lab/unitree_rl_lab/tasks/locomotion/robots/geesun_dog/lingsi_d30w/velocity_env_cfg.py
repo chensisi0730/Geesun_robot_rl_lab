@@ -43,6 +43,7 @@ os.environ["GEESUN_DOG_VARIANT"] = "lingsi_d30w"
 from unitree_rl_lab.assets.robots.unitree import GEESUN_DOG_CFG as ROBOT_CFG  # noqa: E402
 from unitree_rl_lab.assets.robots.unitree import ensure_geesun_dog_usd  # noqa: E402
 from unitree_rl_lab.tasks.locomotion import mdp  # noqa: E402
+from unitree_rl_lab.tasks.locomotion.sensors import airy_cfg as airy  # noqa: E402
 
 # -- lingsi_d30w traits, hard-coded on purpose (cf. GEESUN_DOG_VARIANT_SPECS["lingsi_d30w"]) --
 # Links that touch the ground: lingsi_d30w rolls on its wheels, so the wheel links are the feet
@@ -137,6 +138,36 @@ class RobotSceneCfg(InteractiveSceneCfg):
             intensity=750.0,
             texture_file=f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
         ),
+    )
+
+
+@configclass
+class RobotSceneCfgAiry(RobotSceneCfg):
+    """Scene variant that adds the RoboSense Airy 96-beam LiDAR (head unit).
+
+    Kept as a SUBCLASS so the baseline ``RobotSceneCfg`` stays byte-for-byte unchanged: the existing
+    task and every checkpoint trained from it must keep working, and the baseline must not pay 26 GB
+    of VRAM for a sensor whose observation it never reads.
+
+    实机 PRO 版规格: 96 线 / 水平 360° x 垂直 90° 半球(朝下) / 30 m@10% 反射率, 装在机身头部上方。
+    Modelled as critic-only privileged obs - same convention as ``height_scanner`` - so the policy
+    inputs stay untouched and deployable.
+
+    WHY ONLY ONE (measured, not stylistic): the real robot carries 2 units (head + tail), but one
+    360 deg sweep already covers fore and aft, so a 2nd instance adds no information while costing
+    another ~8-12 GB VRAM. At 4096 envs one unit already sits at 26.2 / 32.6 GB.
+    """
+
+    # WHY MultiMeshRayCasterCfg: plain RayCaster reads only the FIRST UsdGeomMesh under
+    # mesh_prim_paths, so it would see the ground and nothing else; MultiMesh casts against all
+    # listed meshes, which is what a LiDAR needs. See airy_cfg.py for the measurement.
+    airy_front = airy.airy_ray_caster_cfg(
+        prim_path="{ENV_REGEX_NS}/Robot/base_link",
+        offset=airy.AIRY_HEAD_OFFSET,
+        # terrain + the robot itself: self-occlusion matters for a wheel-legged robot, whose own
+        # legs/trunk routinely shadow the near field. This is also the main VRAM cost - drop the
+        # robot path if training OOMs and you only lose near-field self-shadowing.
+        mesh_prim_paths=["/World/ground", "{ENV_REGEX_NS}/Robot"],
     )
 
 
@@ -375,13 +406,16 @@ class RewardsCfg:
         func=mdp.feet_air_time,
         # 2026-10-15 reward-hack fix (stair slide -> leg lift): threshold 0.5 was punishing
         # every normal lift (wheel air time 0.1-0.3 s < 0.5 s -> negative term on landing,
-        # confirmed by Episode_Reward/feet_air_time = -0.006). 0.1 s only filters jitter and
-        # the bigger weight makes lifting pay before the stairs reward does.
+        # confirmed by Episode_Reward/feet_air_time = -0.006). 2026-10-15 later: 0.1 -> 0.05,
+        # because the term was still negative after the fix (most wheel lifts land < 0.1 s);
+        # 0.05 only filters contact-jitter while every real lift pays off. Then 0.05 -> 0.02:
+        # the residual -0.0015 came from 0.02-0.05 s lifts being charged on landing; 0.02
+        # flips them positive (raising weight alone would also amplify the negative term).
         weight=0.5,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_BODY_NAMES),
             "command_name": "base_velocity",
-            "threshold": 0.1,
+            "threshold": 0.02,
         },
     )
     air_time_variance = RewTerm(
@@ -520,6 +554,34 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         # we tick all the sensors based on the smallest update period (physics update period)
         self.scene.contact_forces.update_period = self.sim.dt
         self.scene.height_scanner.update_period = self.decimation * self.sim.dt
+        # Airy is an active 50 Hz sensor (not a 30 fps camera), so it ticks with the control step.
+        # Only the Airy scene variants define it; the baseline scene must stay untouched.
+        if hasattr(self.scene, "airy_front"):
+            self.scene.airy_front.update_period = self.decimation * self.sim.dt
+
+            # Memory guard: the Airy ray-cast buffers are what actually caps the env count, not
+            # compute. CALIBRATED from two measured points on RTX 5090 (32.6 GB) at 4096 envs:
+            #   0.8 deg / 43,200 rays/env -> 26.2 GB total (fits, 6.4 GB spare)
+            #   0.4 deg / 86,400 rays/env -> OOM (needed >31.7 GB)
+            # A naive "rays x 3 x 4 bytes x 2 buffers" estimate gives only 4.0 GB for the case that
+            # actually needs 26.2 GB - it misses the per-env mesh BVH and the ray-info buffers, and a
+            # guard that under-counts by 6x is worse than none. Two-point fit instead:
+            #   total ~= 2.0 GB fixed (Isaac Sim + mesh BVH) + 1.4e-7 GB per ray per env.
+            # This deliberately OVER-estimates at high ray counts, so it errs towards warning.
+            _AIRY_VRAM_FIXED_GB = 2.0
+            _AIRY_VRAM_PER_RAY_GB = 1.4e-7
+            _airy_rays = self.scene.airy_front.pattern_cfg.channels * int(
+                (self.scene.airy_front.pattern_cfg.horizontal_fov_range[1]
+                 - self.scene.airy_front.pattern_cfg.horizontal_fov_range[0])
+                / self.scene.airy_front.pattern_cfg.horizontal_res
+            )
+            _airy_gb = _AIRY_VRAM_FIXED_GB + self.scene.num_envs * _airy_rays * _AIRY_VRAM_PER_RAY_GB
+            assert _airy_gb < 28.0, (
+                f"Airy VRAM budget ~{_airy_gb:.1f} GB at {self.scene.num_envs} envs "
+                f"({_airy_rays} rays/env) risks OOM on a 32 GB card. Lower scene.num_envs or "
+                f"AIRY_HORIZONTAL_RES."
+            )
+            print(f"[airy] {self.scene.num_envs} envs x {_airy_rays} rays/env ~ {_airy_gb:.1f} GB VRAM", flush=True)
 
         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
         # this generates terrains with increasing difficulty and is useful for training
@@ -533,6 +595,169 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
 
 @configclass
 class RobotPlayEnvCfg(RobotEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.scene.terrain.terrain_generator.num_rows = 2
+        self.scene.terrain.terrain_generator.num_cols = 1
+        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+
+
+# =============================================================================
+# Sensor ablation variants (added 2026-10-15).
+#
+# Four configurations, all sharing the SAME policy (策略) observation (49 dims of proprioception)
+# so the actor network - and therefore every checkpoint trained under config A - stays loadable.
+# Only the critic (评论家) privileged observation changes:
+#
+#   A  baseline     height_scanner 187              (== plain RobotEnvCfg, the existing task)
+#   B  replace      airy_bev 720 (no height_scanner) <- deployable end-state: no privileged info
+#   C  stacked      height_scanner 187 + airy_bev 720
+#   D  proprio only none                              (worst case: no external perception at all)
+#
+# B is the configuration that answers the real question: how much performance was the privileged
+# height_scanner lending, and can the real sensor replace it? D bounds the loss when nothing is
+# observable at all.
+#
+# CRITIC DIMENSIONS (measured by scripts/diagnose/smoke_env_obs.py):
+#   A 263 / B 796 / C 983 / D 76, with policy 57 in all four.
+# Changing critic obs invalidates the value net, so each variant trains from scratch - only the
+# ACTOR of an existing checkpoint can be reused, and only for A.
+# =============================================================================
+
+
+@configclass
+class ObservationsCfgAiryReplace(ObservationsCfg):
+    """Config B: Airy BEV replaces height_scanner - no privileged terrain height."""
+
+    @configclass
+    class CriticCfg(ObsGroup):
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, clip=(-100, 100))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.2, clip=(-100, 100))
+        projected_gravity = ObsTerm(func=mdp.projected_gravity, clip=(-100, 100))
+        velocity_commands = ObsTerm(
+            func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "base_velocity"}
+        )
+        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, clip=(-100, 100))
+        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100))
+        joint_effort = ObsTerm(func=mdp.joint_effort, scale=0.01, clip=(-100, 100))
+        last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))
+        airy_bev = ObsTerm(
+            func=mdp.airy_bev_scan,
+            params={"sensor_cfg": SceneEntityCfg("airy_front")},
+            clip=(0.0, 2.0),
+        )
+
+    critic: CriticCfg = CriticCfg()
+
+
+@configclass
+class ObservationsCfgAiryStacked(ObservationsCfg):
+    """Config C: Airy BEV stacked on top of height_scanner (isolates the LiDAR's marginal value)."""
+
+    @configclass
+    class CriticCfg(ObsGroup):
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, clip=(-100, 100))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.2, clip=(-100, 100))
+        projected_gravity = ObsTerm(func=mdp.projected_gravity, clip=(-100, 100))
+        velocity_commands = ObsTerm(
+            func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "base_velocity"}
+        )
+        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, clip=(-100, 100))
+        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100))
+        joint_effort = ObsTerm(func=mdp.joint_effort, scale=0.01, clip=(-100, 100))
+        last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))
+        height_scanner = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+            clip=(-1.0, 5.0),
+        )
+        airy_bev = ObsTerm(
+            func=mdp.airy_bev_scan,
+            params={"sensor_cfg": SceneEntityCfg("airy_front")},
+            clip=(0.0, 2.0),
+        )
+
+    critic: CriticCfg = CriticCfg()
+
+
+@configclass
+class ObservationsCfgProprioOnly(ObservationsCfg):
+    """Config D: no external perception at all - the lower bound the LiDAR has to beat."""
+
+    @configclass
+    class CriticCfg(ObsGroup):
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, clip=(-100, 100))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.2, clip=(-100, 100))
+        projected_gravity = ObsTerm(func=mdp.projected_gravity, clip=(-100, 100))
+        velocity_commands = ObsTerm(
+            func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "base_velocity"}
+        )
+        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, clip=(-100, 100))
+        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100))
+        joint_effort = ObsTerm(func=mdp.joint_effort, scale=0.01, clip=(-100, 100))
+        last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))
+
+    critic: CriticCfg = CriticCfg()
+
+
+@configclass
+class RobotEnvCfgAiryReplace(RobotEnvCfg):
+    """Config B env: LiDAR BEV replaces the privileged height scanner."""
+
+    scene: RobotSceneCfgAiry = RobotSceneCfgAiry(num_envs=4096, env_spacing=2.5)
+    observations: ObservationsCfgAiryReplace = ObservationsCfgAiryReplace()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "unitree_geesun_lingsi_d30w_ht_stairs_10x_airy_replace"
+
+
+@configclass
+class RobotEnvCfgAiryStacked(RobotEnvCfg):
+    """Config C env: LiDAR BEV stacked on top of height_scanner."""
+
+    scene: RobotSceneCfgAiry = RobotSceneCfgAiry(num_envs=4096, env_spacing=2.5)
+    observations: ObservationsCfgAiryStacked = ObservationsCfgAiryStacked()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "unitree_geesun_lingsi_d30w_ht_stairs_10x_airy_stacked"
+
+
+@configclass
+class RobotEnvCfgProprioOnly(RobotEnvCfg):
+    """Config D env."""
+
+    observations: ObservationsCfgProprioOnly = ObservationsCfgProprioOnly()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "unitree_geesun_lingsi_d30w_ht_stairs_10x_proprio_only"
+
+
+@configclass
+class RobotPlayEnvCfgAiryReplace(RobotEnvCfgAiryReplace):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.scene.terrain.terrain_generator.num_rows = 2
+        self.scene.terrain.terrain_generator.num_cols = 1
+        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+
+
+@configclass
+class RobotPlayEnvCfgAiryStacked(RobotEnvCfgAiryStacked):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.scene.terrain.terrain_generator.num_rows = 2
+        self.scene.terrain.terrain_generator.num_cols = 1
+        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+
+
+@configclass
+class RobotPlayEnvCfgProprioOnly(RobotEnvCfgProprioOnly):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32
