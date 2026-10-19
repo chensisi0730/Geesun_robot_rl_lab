@@ -197,7 +197,86 @@ LiDAR 只通过 `RobotSceneCfgAiry`（scene 子类）引入，**仅 B/C 使用**
 - **policy 接入**：当前仅 critic 观测，policy 仍是 57 维 proprioception。接入 policy 会让**所有旧 checkpoint 作废**。
 - **RGB 摄像头**：已确认暂不接入策略（无深度 + 渲染路线代价过大）。
 
-## 八、复现命令
+## 九、height_scanner（高度扫描传感器）观测被 clip 饱和 —— 2026-10-15 实测发现
+
+### 现象
+
+`mdp.height_scan`（Isaac Lab `isaaclab/envs/mdp/observations.py:297`）：
+
+```python
+return sensor.data.pos_w[:, 2] - sensor.data.ray_hits_w[..., 2] - offset   # offset 默认 0.5
+```
+
+任务把传感器吊在 `base_link` 上方 20 m（`OffsetCfg(pos=(0,0,20))`），`ray_alignment="yaw"`
+（光线垂直向下），于是：
+
+```
+sensor_pos_w.z = base_z + 20 ≈ 0.61 + 20 = 20.61      # lingsi_d30w 站立高度（unitree.py:1274）
+hit_z          ≈ 0 .. 0.23                            # 地形面 / 楼梯踏步
+raw            ≈ 19.9 .. 20.1
+clip=(-1.0, 5.0)  →  187 个格子全部 = 5.0（常数）
+```
+
+**即 height_scanner 的 187 维在修复前是 187 个常数，不携带任何地形信息。**
+A（基线）与 D（ProprioOnly，纯本体感知）的差值衡量的是"多 187 个常数输入"，不是高度感知收益。
+Isaac Lab 上游 stock 配置同病（`isaaclab_tasks/.../velocity/velocity_env_cfg.py:112-185`：
+`offset (0,0,20)` + 默认 `offset=0.5` + `clip=(-1,1)` → 饱和在 1.0）。
+
+### 修复（1 处 1 个数，观测维度不变）
+
+```python
+height_scanner = ObsTerm(
+    func=mdp.height_scan,
+    params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 20.5},  # 抵消 20 m 吊挂
+    clip=(-1.0, 1.0),
+)
+# 输出 = base_z - hit_z - 0.5 ∈ [-0.3, +0.2]，0.05~0.23 m 踏步全分辨率可见
+```
+
+已同步改动的 3 处：`lingsi_d30w/velocity_env_cfg.py` 的 `ObservationsCfg.CriticCfg`（config A）
+与 `ObservationsCfgAiryStacked.CriticCfg`（config C）、`go2/velocity_env_cfg.py` 的 `CriticCfg`
+（保证 GO2 ↔ D30W 跨体消融口径一致）。
+
+**维度不变（187）** → value（价值）网络输入层 shape 不变 → checkpoint（检查点）shape 兼容；
+但这 187 维语义变了，严格消融仍建议 fresh（重训）。
+
+### 验证（exit 0 = ALIVE，exit 1 = SATURATED）
+
+```bash
+python scripts/diagnose/verify_height_scan_alive.py --headless --num_envs 16 --offset 20.5
+# 产物 outputs/verify_height_scan/stats.json
+# 判据：clipped.std >= 0.02 且 frac_at_upper_clip < 0.99
+```
+
+脚本同时**逐项实测观测宽度**（不硬编码），坐实消融维度表：
+
+| 配置 | 组成 | critic 维度 | policy 维度 |
+|---|---|---|---|
+| A 基线 | 76 + 187 | **263** | 57 |
+| B 替代 | 76 + 720 | **796** | 57 |
+| C 叠加 | 76 + 187 + 720 | **983** | 57 |
+| D 下界 | 76 | **76** | 57 |
+
+（旧文档里的 936 / 956 / 1676 / 216 与 policy 49 是硬编码假设，已作废。）
+
+### 对既有结论的影响
+
+- 已完成的 `unitree_geesun_lingsi_d30w_ht_stairs*` 各 run 的 critic 里，那 187 维是常数
+  → 这些 run 的 TensorBoard 曲线**不能**用来论证 height_scanner 收益；
+- 修复后必须 fresh 重训 A，才能与 D 做有意义的减法；
+- 感知路线（激光雷达 → 17×11 感知高度图，config E）必须与修复后的 A **同口径**
+  （`base_z - hit_z - 0.5`、同 clip、同 187 维），否则 A vs E 比较的是两个不同尺度的高度项。
+
+---
+
+## 十、复现命令汇总
+
+```bash
+# height_scanner 观测是否活着（A 基线先决条件）
+python scripts/diagnose/verify_height_scan_alive.py --headless --num_envs 16 --offset 20.5
+python scripts/diagnose/verify_height_scan_alive.py --headless --num_envs 16 \
+    --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryStacked
+```
 
 ```bash
 # 第 1 步：传感器建模 + 半球朝向 + 几何精度

@@ -164,10 +164,17 @@ class RobotSceneCfgAiry(RobotSceneCfg):
     airy_front = airy.airy_ray_caster_cfg(
         prim_path="{ENV_REGEX_NS}/Robot/base_link",
         offset=airy.AIRY_HEAD_OFFSET,
-        # terrain + the robot itself: self-occlusion matters for a wheel-legged robot, whose own
-        # legs/trunk routinely shadow the near field. This is also the main VRAM cost - drop the
-        # robot path if training OOMs and you only lose near-field self-shadowing.
-        mesh_prim_paths=["/World/ground", "{ENV_REGEX_NS}/Robot"],
+        # TERRAIN ONLY - the robot's own meshes are deliberately NOT listed (2026-10-16, measured).
+        # Adding "{ENV_REGEX_NS}/Robot" for near-field self-occlusion makes `MultiMeshRayCasterCfg`
+        # dedup one USD mesh per env at ~1 s/env: 4096 envs took ~68 min of pure init and then the
+        # process died silently (no Traceback, log frozen at "Starting the simulation", died at env
+        # ~2796/4096) - twice. It also pushes VRAM past the 26.2 GB figure measured WITHOUT the robot
+        # (that is the number the airy_cfg guard was calibrated on). Net effect: no training at all.
+        # Dropping it costs only the near-field self-shadow of the legs/trunk, which is exactly the
+        # trade this comment originally sanctioned ("drop the robot path if training OOMs and you
+        # only lose near-field self-shadowing") - the terrain/stair signal the BEV exists for is
+        # unaffected, because the sub-terrain obstacles live under /World/ground.
+        mesh_prim_paths=["/World/ground"],
     )
 
 
@@ -335,10 +342,27 @@ class ObservationsCfg:
         # MID360 without changing the actor inputs. Critic obs grows by 187 dims (17x11 grid at
         # 0.1 m over 1.6 x 1.0 m), which changes the value net input layer -> old checkpoints
         # cannot be resumed, this run must start fresh.
+        #
+        # OFFSET REVERT (2026-10-16, MEASURED - scripts/diagnose/check_height_scanner_values.py):
+        # ``mdp.height_scan`` returns ``sensor.data.pos_w.z - ray_hits_w.z - offset``, and the 20 m
+        # ``OffsetCfg(pos=(0,0,20))`` only raises the ray START - it does NOT enter ``pos_w``.
+        # Measured on this task: pos_w z = [0.610, 0.610, 0.640] (base_link / trunk height) and
+        # ray_hits_w z spans 0.000 .. 0.524. So with the default offset=0.5 the raw value is
+        #     0.61 - hit_z - 0.5  in  [-0.41, +0.11]
+        # which clip=(-1.0, 1.0) passes through untouched: a live, terrain-varying term.
+        #
+        # The 2026-10-15 "fix" that set offset=20.5 assumed pos_w were base_z + 20 = 20.61. It is
+        # wrong: it drove the raw value to ~ -19.9, so ALL 187 cells pinned to the clip floor -1.0
+        # (measured 187/187 at -1.0 even after 20 steps) - i.e. it turned a live privileged term
+        # into a constant, which silently degraded every run trained since. Reverted to 0.5.
+        # Obs DIMS stay 187, so the value-net input layer is unchanged and checkpoints remain
+        # shape-compatible; only the CONTENT of those 187 inputs changed (constant -> terrain).
+        # NOTE: this makes checkpoints trained with offset=20.5 (dead term) NOT comparable to the
+        # A-baseline; the A arm of the ablation must be re-trained from scratch.
         height_scanner = ObsTerm(
             func=mdp.height_scan,
-            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
-            clip=(-1.0, 5.0),
+            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
+            clip=(-1.0, 1.0),
         )
 
         # def __post_init__(self):
@@ -667,10 +691,15 @@ class ObservationsCfgAiryStacked(ObservationsCfg):
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100))
         joint_effort = ObsTerm(func=mdp.joint_effort, scale=0.01, clip=(-100, 100))
         last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))
+        # Same OFFSET REVERT as ObservationsCfg.CriticCfg (see the long comment there): the 20 m
+        # OffsetCfg does NOT enter pos_w (measured pos_w z = 0.61), so the correct offset is the
+        # default 0.5 -> base_z - hit_z - 0.5 in [-0.41, +0.11]. Config C must use the SAME
+        # convention as A or the "marginal value of the LiDAR" comparison would be between two
+        # different height terms.
         height_scanner = ObsTerm(
             func=mdp.height_scan,
-            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
-            clip=(-1.0, 5.0),
+            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
+            clip=(-1.0, 1.0),
         )
         airy_bev = ObsTerm(
             func=mdp.airy_bev_scan,

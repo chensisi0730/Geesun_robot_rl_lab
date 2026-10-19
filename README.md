@@ -1015,6 +1015,31 @@ done
 > "策略真正使用高度"，把 `height_scan` 观测项从 `CriticCfg` 移到 `PolicyCfg`（policy 观测 +187 维），
 > 并保留本次 critic-only 演示作为对照组（ablation，消融）。
 >
+> ⚠️ **2026-10-16 实测订正（覆盖 2026-10-15 的错误结论）：`offset` 的正确值就是默认的 `0.5`**
+> （lingsi_d30w 与 GO2 两个任务已同步修正）。
+> `mdp.height_scan` 返回 `sensor_pos_w.z − hit_z − offset`。传感器确实吊在 `base_link` 上方 20 m
+> （`OffsetCfg pos=(0,0,20)`），**但这个 20 m 只抬高射线起点，不会进入 `pos_w`** ——
+> `scripts/diagnose/check_height_scanner_values.py` 实测 `pos_w z = [0.610, 0.610, 0.640]`（= 机身高度），
+> `ray_hits_w z ∈ [0.000, 0.524]`。因此：
+> - **`offset=0.5`（正确）** → 原始值 `0.61 − hit_z − 0.5 ∈ [-0.41, +0.11]`，`clip=(-1.0, 1.0)` 原样通过 → **活项**。
+> - **`offset=20.5`（2026-10-15 的错误"修复"）** → 原始值 ≈ `−19.9`，被 `clip` **钉成 187 个常数 −1.0**
+>   （实测 187/187 贴 clip 下界，跑 20 步仍是）→ **死项**。
+>
+> 教训：10-15 那次"修复"的前提假设 `pos_w = base_z + 20 = 20.61` 是错的，反而把一个正常的观测项改坏了。
+> **凡是用 `offset=20.5` 训出来的 checkpoint，其 187 维 height_scanner 都是常数 ⇒ 等价于 D（盲）基线，
+> 不能当作 A 基线使用，必须重训。** 维度不变（187）→ shape 兼容，但语义是"常数 vs 地形"之别。
+>
+> **验证一条命令（exit 0 = ALIVE，exit 1 = SATURATED）**：
+>
+> ```bash
+> python scripts/diagnose/verify_height_scan_alive.py --headless --num_envs 16 --offset 20.5
+> # 打印逐项实测维度（policy 57 / critic A 263、B 796、C 983、D 76）
+> # 打印 height_scanner 的 raw 与 clipped 的 min/max/std 与"被钉在 clip 边界"的比例
+> # 产物：outputs/verify_height_scan/stats.json
+> ```
+>
+> 判据：`clipped.std ≥ 0.02` 且 `frac_at_upper_clip < 0.99` → 该项真正携带地形信息。
+>
 > **同一 GPU 只能跑一个 IsaacSim（仿真器）实例**：本演示与 dog1 / 基线 d30w 训练互斥，切换前先停旧进程。
 
 **10× 网络规模消融（2026-10-14 起，`unitree_geesun_lingsi_d30w_ht_stairs_10x`）：** 在上面 stairs +
@@ -1247,6 +1272,17 @@ tall_obstacles_saturate_at_sensor_height   forward_rising_profile(step<box<wall)
 （漏掉 per-env mesh BVH 与 ray-info 缓冲，**低估 6.6 倍**），是比没有保护更危险的假保护。
 代码里改用两点实测标定 `2.0 GB + 1.4e-7 × rays × envs`，且在高 ray 数处故意高估，宁可误报也不静默 OOM。
 
+⚠️ **初始化还有第二个硬成本：`MultiMeshRayCasterCfg` 的 mesh 去重是 O(num_envs) 的**（2026-10-16 实测）。
+`mesh_prim_paths` 里若含 `{ENV_REGEX_NS}/Robot`（为近场自遮挡），它会对**每个 env 的机器人 mesh 做一次 USD 去重扫描**，
+实测 **~1 s/env**（26 核满载）：4096 envs → **~68 分钟**才出第一条 `Learning iteration`；
+若沿用基线的 20096 envs 则要 **~5.5 小时**，且每 env 的机器人 BVH 会把显存推过 4096-env 的 26.2 GB 标定值
+（那次标定是**不含机器人**的）。所以 4096 envs + 含机器人 mesh 这条路同时踩中"慢"和"可能 OOM"两个坑；
+配置注释里"OOM 时可去掉 robot path，只损失近场自遮挡"是经过这次实测才确认的取舍。
+
+⚠️ **两个 Isaac Sim 进程并发 = C++ 静默 abort**（无 Traceback，日志停在 `Starting the simulation`）：
+一个卡在 `simulation_app.close()` 的诊断脚本没退出，就足以让随后启动的训练进程无声死亡。
+**任何诊断脚本跑完必须 `os._exit(0)`**，且同一时刻只允许一个 Isaac Sim 实例。
+
 ### 四、消融配置（4 个 task 已注册并通过冒烟测试）
 
 四个 task **共享同一份 policy 观测（实测 57 维）**，只改 critic 特权观测，
@@ -1271,6 +1307,7 @@ A baseline          57    263   16              -       nan      nan    32.42  O
 B airy_replace      57    796   16 161351062/1382400    0.1947    0.960    36.17  OK
 C airy_stacked      57    983   16    161351048/1382400    0.1947    0.942    38.65  OK
 D proprio_only      57     76   16              -       nan      nan    31.02  OK
+proprio_only : 只用本体?
 ```
 
 ⚠️ **基线必须保持零改动**：LiDAR 只经 `RobotSceneCfgAiry`（scene 子类）引入，仅 B/C 使用。
@@ -1291,9 +1328,130 @@ python scripts/diagnose/verify_airy_bev.py --headless
 
 # 4 个配置的端到端冒烟（真实建 env 并 step）
 python scripts/diagnose/smoke_env_obs.py --headless --num_envs 32 --steps 30
+
+# 4 个配置的严格消融训练（同 seed / 同超参 / 同  iters次数，只改 critic 特权观测）
+# ⚠️ 必须串行：两个 Isaac Sim 进程并发会 C++ 静默 abort（见上文）
+# ⚠️ env 数不对称（LiDAR 显存硬上限）：无 LiDAR 的 A/D 用 20096（与参考 ht_stairs_10x 同尺度），
+#    带 Airy 传感器的 B/C 受 43200 射线/env 限制，4096 已近 32 GB 天花板 → A/D 每迭代样本量是 B/C 的 5×。
+#    消融按“固定迭代数的最终性能”对比（已披露）；--video 再占 ~4 GB（B/C 逼近上限，慎用于小显存卡）。
+PY=/home/css/miniconda3/envs/env_isaaclab_sim51/bin/python
+COMMON="--headless --seed 42 --max_iterations 10000 --video --video_length 250 --video_interval 1000 --camera_view diag"
+$PY scripts/rsl_rl/train.py $COMMON --task Unitree-GeesunDog-LingsiD30W-Velocity             --num_envs 20096 --run_name airy_A_baseline
+$PY scripts/rsl_rl/train.py $COMMON --task Unitree-GeesunDog-LingsiD30W-Velocity-ProprioOnly --num_envs 20096 --run_name airy_D_proprio
+$PY scripts/rsl_rl/train.py $COMMON --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace --num_envs 4096 --run_name airy_B_replace
+$PY scripts/rsl_rl/train.py $COMMON --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryStacked --num_envs 4096 --run_name airy_C_stacked
+
+# 或直接交给排队脚本（等当前 B 跑完自动接 A → D → C，见 scripts/train_airy_ablation_queue.sh）
+setsid nohup bash scripts/train_airy_ablation_queue.sh > outputs/train_airy_queue_stdout.log 2>&1 &
+
+# ─────────────────────────────────────────────────────────────
+# 【每臂独立迭代数】v1 与 v2 均已支持（2026-10-19 升级）
+#   两个脚本功能完全相同，区别只在“训练进行中该动哪个”：训练在跑时绝不能动正在运行的那个文件
+#   （bash 持有它的 fd），要用另一个副本启动；没有队列在跑时两者任选，v1 是主文件。
+# 脚本顶部给每组一个默认迭代数（iteration），互不影响：
+#     ITER_A=10000   ITER_D=10000   ITER_B=10000   ITER_C=10000     ← 改脚本里这 4 行
+# 优先级：命令行第 1 参数 > MAX_ITER 环境变量 > 各臂自己的 ITER_*（后两者都不给 → 用各臂默认）
+#   例：ITER_B=ITER_C=50000 做“等样本量”对比（B/C 只有 4096 envs，样本量是 A/D 的 1/5）
+# run 行第 5 个参数 = 额外 CLI 参数串（续跑用）：
+#     run "Unitree-GeesunDog-LingsiD30W-Velocity" airy_A_baseline 20096 "$ITER_A" \
+#         "--resume --load_run 2026-10-19_16-36-14_airy_A_baseline --load_checkpoint model_900"
+#   resume（续跑）不会删课程 sidecar（课程状态文件），地形等级与速度课程可接上。
+setsid nohup bash scripts/train_airy_ablation_queue.sh > outputs/train_airy_queue_stdout.log 2>&1 &
+bash scripts/train_airy_ablation_queue.sh 200          # 全局覆盖：四组都只跑 200 迭代（冒烟测试）
+setsid nohup bash scripts/train_airy_ablation_queue_v2.sh > outputs/train_airy_queue_stdout.log 2>&1 &
+bash scripts/train_airy_ablation_queue_v2.sh 200      # 全局覆盖：四组都只跑 200 迭代（冒烟测试）
+# 队列日志现在会打印每臂的 envs 数与迭代数，便于核对消融配置：
+#   [queue] ... === airy_B_replace (Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace, 4096 envs, 55555 iters) start ===
+# video_interval（录像间隔）随迭代数自适应 → 短训（如 200 迭代）也能录到视频。
+# 空跑自检（dry run，不启动真训练）：把脚本里 PY 换成 echo 包装、QLOG 指到 /tmp，
+#   再 bash 副本，检查每臂 --max_iterations 是否等于各自 ITER_*、覆盖是否生效。
+# ⚠️ 绝不要边跑边编辑“正在运行的脚本文件”：bash 进程持有该脚本的 fd（看 /proc/<pid>/fd/255），
+#    改文件会让它的读取偏移错位，后续行可能从中间开始解析（语法错乱 / 漏跑 / 意外接力）。
+#    训练进行中要改配置 → 新建脚本文件（如 v2）；等没有队列在跑时再 cp 覆盖回旧文件名。
+
+# ─────────────────────────────────────────────────────────────
+# 【队列健康自检 / 挂起死锁排障】（2026-10-19 实测教训）
+# 现象：queue（排队）脚本"在跑"，但 outputs/train_airy_A_baseline.log 数小时零输出、
+#       没有任何 "Learning iteration"（学习迭代）行；GPU 只占 ~3.3 GB、利用率 <10%。
+# 根因：训练进程被 SIGTSTP（Ctrl+Z）挂起后 STAT 是 T（stopped，已停止），而排队循环
+#       `while pgrep -f "train.py --headless"; do sleep 15; done` 里 pgrep 仍然匹配 →
+#       队列永远等不到"上一个训练结束"，形成死锁；挂起进程还占着显存不放。
+#       此时再启动 queue 脚本只会堆积更多卡住的实例（每个将来都会重复跑一遍 A）。
+ps -eo pid,stat,etime,time,cmd | grep -E 'train_airy_ablation_queue|train.py --headless' | grep -v grep
+# 期望：queue 脚本恰好 1 个（STAT=Ss），训练进程 1 个且 STAT=Rl（Running，运行中）；出现 T 即被挂起。
+nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv   # 20096 envs 满场景应 ~25 GB / 70%+
+grep -c 'Learning iteration' outputs/train_airy_A_baseline.log    # 必须持续增长
+tail -2 outputs/train_airy_queue.log                               # 有 start 无 exit code = 该组未结束
+# 恢复步骤（挂起的训练若 0 迭代、无 run 目录，直接杀无损失）：
+#   kill -9 <queue 的 pid> <train.py 的 pid>
+#   cp outputs/curriculum_sidecar_backup/*.json logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x/
+#   setsid nohup bash scripts/train_airy_ablation_queue.sh 10000 > outputs/train_airy_queue_stdout.log 2>&1 &
+# 注意 1：绝不要在交互终端里前台跑该脚本（Ctrl+Z 或关闭终端都会杀掉训练）；必须 setsid nohup 脱离终端。
+# 注意 2：初始化耗时参考 —— 20096 envs 从启动到第一条 Learning iteration 约 8 分钟，期间日志停在
+#         PhysX 的 enable_external_forces_every_iteration 警告行属正常，不要误判为卡死。
+# 注意 3：fresh（非 --resume）训练会删共享 experiment 目录下的 curriculum_state.json /
+#         terrain_levels_state.json（课程状态文件），脚本末尾自动还原；中途被杀需手动 cp 还原。
+
+# height_scanner 活项自检（exit 0 = ALIVE，exit 1 = DEAD/被 clip 钉住）
+python scripts/diagnose/check_height_scanner_values.py --headless --num_envs 8 --steps 20
+
+# height_scanner 空间高度图验证（楼梯）：证明 187 格在 pyramid_stairs 上构成真实高度图而非常数
+#   exit 0 = RESOLVED（足迹跨地形高度分化）；exit 1 = FLAT。强制单块满难度楼梯 + 悬停读取 17x11 网格
+#   实测（2026-10-16）：ray_hits_w z 跨 0.00~1.38 m，obs 187 格 +0.51~-0.87、std≈0.39 -> RESOLVED
+python scripts/diagnose/check_height_scanner_stairs.py --headless --num_envs 1 --hover_z 1.0
+
+# 训练后逐 arm 保存 height_scanner 的 高度差 / 均值 / 方差（落盘 outputs/height_scanner_stats/<arm>.json）
+#   A/C 有该项（应 alive、variance>0）；B 被 Airy 替代、D 纯本体 -> 该项缺失（present=false）
+#   fast_terrain（flat+pyramid_stairs 1x2）秒级启动，保证网格有起伏；具体数值随落点/难度浮动，看 alive 判定与趋势
+python scripts/diagnose/save_height_scanner_stats.py --headless --task Unitree-GeesunDog-LingsiD30W-Velocity              # -> A_baseline.json
+python scripts/diagnose/save_height_scanner_stats.py --headless --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryStacked    # -> AiryStacked.json
+python scripts/diagnose/save_height_scanner_stats.py --headless --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace    # -> AiryReplace.json
+python scripts/diagnose/save_height_scanner_stats.py --headless --task Unitree-GeesunDog-LingsiD30W-Velocity-ProprioOnly    # -> ProprioOnly.json
+
+# ─────────────────────────────────────────────────────────────
+# 测试 / 回放（play.py）
+# ⚠️ 必须显式 --checkpoint：play.py 默认在该 experiment 目录下挑“最新 run + 最新 model”，
+#    而 unitree_geesun_lingsi_d30w_ht_stairs_10x 混了 A/B/C/D 四组，不指定会挑错 arm。
+# ⚠️ --task 必须与 checkpoint 同 arm，否则 policy 输入维度不匹配 → size mismatch。
+# ⚠️ 消融进度（2026-10-19 实测）：A、D 各已完成 2000 iters（迭代数）——run 目录
+#    2026-10-16_19-59-33_airy_A_baseline / 2026-10-16_22-07-45_airy_D_proprio（均到 1999/2000）；
+#    B、C 至今无有效结果（启动后 19~52 秒即退出，队列日志记 exit code 0 但无 Learning iteration 行），
+#    对应测试需先跑上面的 train 块。A 的 10000 iters 长训自 2026-10-19_16-36-14_airy_A_baseline 起进行中。
+PY=/home/css/miniconda3/envs/env_isaaclab_sim51/bin/python
+EXP=logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x
+# 查所有 run 与最新 checkpoint：
+#   ls -t $EXP | head ; ls $EXP/<RUN>/model_*.pt | sort | tail -1
+
+# A 基线（已训完，✓ 可测）
+$PY scripts/rsl_rl/play.py --headless \
+  --task Unitree-GeesunDog-LingsiD30W-Velocity \
+  --checkpoint $EXP/2026-10-16_13-44-35_airy_A_baseline/model_9999.pt
+
+# B Airy 替代（⚠ 先训练 airy_B_replace）
+$PY scripts/rsl_rl/play.py --headless \
+  --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace \
+  --checkpoint $EXP/<airy_B_replace_RUN>/model_XXXX.pt
+
+# C Airy 堆叠（⚠ 先训练 airy_C_stacked）
+$PY scripts/rsl_rl/play.py --headless \
+  --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryStacked \
+  --checkpoint $EXP/<airy_C_stacked_RUN>/model_XXXX.pt
+
+# D 纯本体感知（训练中，把 XXXX 换成 ls $EXP/2026-10-16_18-10-19_airy_D_proprio 的最大编号）
+$PY scripts/rsl_rl/play.py --headless \
+  --task Unitree-GeesunDog-LingsiD30W-Velocity-ProprioOnly \
+  --checkpoint $EXP/2026-10-16_18-10-19_airy_D_proprio/model_XXXX.pt
+
+# 可选 flags：--num_envs 256（并行加速统计） / --video --camera_view diag（录视频） / --real-time
 ```
 
 产物落在 `outputs/verify_airy*/`（`stats.json` / `bev.png` / 点云 CSV·PLY）。
+
+> ⚠️ **fresh run 会删掉共享实验目录的两个 curriculum sidecar**（`curriculum_state.json` /
+> `terrain_levels_state.json`，`train.py` 只对 `--resume` 保留）。做消融前先按上文「跨 run / 回退消融」
+> 小节的规则备份；本仓库已把 `unitree_geesun_lingsi_d30w_ht_stairs_10x` 的原始值存到
+> `outputs/curriculum_sidecar_backup/`（20096 envs / terrain mean 0.50 / step 0 /
+> 命令范围 `[-0.6,0.6] [-0.1,0.1] [-1.0,1.0]`）。
 
 ### 六、踩坑记录（都是实测踩出来的，别照抄直觉）
 
@@ -1304,6 +1462,13 @@ python scripts/diagnose/smoke_env_obs.py --headless --num_envs 32 --steps 30
 4. **显存估算公式低估 6.6 倍** —— 朴素公式给出假保护，`0.4°` 时断言不触发但实际 OOM。必须实测标定
 5. **同进程建第 2 个 env 触发 `UsdExpiredPrimAccessError`（C++ abort，Python 无法捕获）** ——
    每个配置必须独立子进程；且 `simulation_app.close()` 会挂起，需 `os._exit(0)`
+6. **`MultiMeshRayCasterCfg` 的 mesh 去重是 O(num_envs)** —— `mesh_prim_paths` 含机器人时
+   ~1 s/env，4096 envs 光初始化就要 ~68 分钟（20096 envs 要 5.5 小时），显存也会越过标定值
+7. **两个 Isaac Sim 进程并发 = C++ 静默 abort** —— 无 Traceback，日志停在 `Starting the simulation`。
+   一个没退出的诊断脚本就足以杀死随后启动的训练。诊断脚本一律 `os._exit(0)`，同一时刻只跑一个实例
+8. **`--run_name` 生效但实验目录由 `agent_cfg.experiment_name` 决定** —— D30W 各 task 共用
+   `logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x`，run 名前加时间戳区分；
+   且 **fresh run 会删掉该目录的两个 curriculum sidecar**，消融前必须先备份
 6. **`um.group_obs_term_dims` 不存在** —— 真实属性是私有的 `om._group_obs_term_dim`
 7. **`env.num_actions` 不存在** —— 用 `sum(env.action_manager.action_term_dim)`
 8. **D30W 是 16 个驱动关节，不是 12** —— policy 57 维、action 16 维，实测得来，不要按 12 推算
