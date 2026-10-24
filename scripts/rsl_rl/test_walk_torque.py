@@ -71,7 +71,63 @@ parser.add_argument(
     help="Use the play config's full command limits. Default keeps the stage-1 +/-0.25 m/s linear range.",
 )
 parser.add_argument(
-    "--output", type=str, default=None, help="Output CSV path. Defaults to <checkpoint_dir>/flat_walk_stats.csv."
+    "--cmd_x",
+    type=float,
+    nargs=2,
+    default=None,
+    metavar=("MIN", "MAX"),
+    help="Override the linear-x command range (m/s). Highest priority: explicit --cmd_* wins over "
+    "--full_command_range, which wins over the default +/-0.25 narrowing. Same semantics as play.py.",
+)
+parser.add_argument(
+    "--cmd_y",
+    type=float,
+    nargs=2,
+    default=None,
+    metavar=("MIN", "MAX"),
+    help="Override the linear-y command range (m/s). Same priority as --cmd_x.",
+)
+parser.add_argument(
+    "--cmd_z",
+    type=float,
+    nargs=2,
+    default=None,
+    metavar=("MIN", "MAX"),
+    help="Override the yaw command range (rad/s). Same priority as --cmd_x.",
+)
+parser.add_argument(
+    "--no_standing",
+    action="store_true",
+    default=False,
+    help="Disable the standing envs (rel_standing_envs = 0), so every robot keeps walking. Same as play.py. "
+    "Recommended for forward-progress measurements: standing envs dilute forward_ok_fraction.",
+)
+parser.add_argument(
+    "--tb_tag",
+    type=str,
+    default=None,
+    help="Tag prefix for the TensorBoard scalars (Eval/<tb_tag>/...) AND for the default CSV name. "
+    "Default = --terrain. Set it when evaluating the same terrain twice (e.g. wheel-locked vs free "
+    "wheels): identical tags would overwrite each other.",
+)
+parser.add_argument(
+    "--output", type=str, default=None, help="Output CSV path. Defaults to <checkpoint_dir>/<tag>_terrain_stats.csv."
+)
+parser.add_argument(
+    "--no_tb",
+    action="store_true",
+    default=False,
+    help="Do not write the evaluation scalars to TensorBoard (default: write them into the run's event dir).",
+)
+parser.add_argument(
+    "--tb_dir",
+    type=str,
+    default=None,
+    help=(
+        "TensorBoard logdir for the evaluation scalars. Default = the checkpoint's directory, i.e. the "
+        "training run dir that already holds events.out.tfevents.* - TensorBoard merges every event file "
+        "in one logdir, so the eval curves show up next to the training curves of the same run."
+    ),
 )
 parser.add_argument(
     "--save_raw", action="store_true", default=False, help="Additionally save raw torque samples to .npz."
@@ -122,6 +178,73 @@ def resolve_checkpoint(agent_cfg) -> str:
     return get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
 
+def checkpoint_iteration(resume_path: str) -> int:
+    """Iteration number encoded in the checkpoint file name (model_10400.pt -> 10400)."""
+    stem = os.path.basename(resume_path)
+    if stem.startswith("model_") and stem.endswith(".pt"):
+        try:
+            return int(stem[len("model_") : -len(".pt")])
+        except ValueError:
+            pass
+    return 0
+
+
+def log_to_tensorboard(
+    resume_path: str,
+    terrain: str,
+    metrics: dict[str, float],
+    joint_names: list[str],
+    peak: torch.Tensor,
+    p99: torch.Tensor,
+    rms: torch.Tensor,
+    tb_dir: str | None = None,
+) -> str | None:
+    """Write the evaluation scalars into the training run's TensorBoard.
+
+    The logdir is the checkpoint's directory, i.e. the run dir the rsl-rl runner already writes
+    ``events.out.tfevents.*`` to. TensorBoard merges every event file found in one logdir, so the
+    evaluation curves show up next to the training curves of the SAME run, with the checkpoint
+    iteration as the x-axis (``model_10400.pt`` -> step 10400).
+
+    The terrain mode is part of the tag (``Eval/<terrain>/...``) so flat / stairs / complex
+    numbers never land on one curve. Per-joint torque stats are logged as
+    ``Eval/<terrain>/torque_peak|torque_p99|torque_rms/<joint>``.
+
+    Returns the logdir on success, ``None`` when TensorBoard is unavailable or the write failed.
+    """
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except Exception as exc:  # tensorboard is optional
+        print(f"[WARN] TensorBoard not available, skipping TB logging: {exc}")
+        return None
+    log_dir = tb_dir or os.path.dirname(resume_path)
+    if not log_dir:
+        print("[WARN] No TensorBoard logdir resolved, skipping TB logging.")
+        return None
+    step = checkpoint_iteration(resume_path)
+    prefix = f"Eval/{terrain}"
+    try:
+        writer = SummaryWriter(log_dir=log_dir)
+        for key, value in metrics.items():
+            writer.add_scalar(f"{prefix}/{key}", float(value), step)
+        for j, name in enumerate(joint_names):
+            writer.add_scalar(f"{prefix}/torque_peak/{name}", float(peak[j]), step)
+            writer.add_scalar(f"{prefix}/torque_p99/{name}", float(p99[j]), step)
+            writer.add_scalar(f"{prefix}/torque_rms/{name}", float(rms[j]), step)
+        writer.add_text(
+            f"{prefix}/summary",
+            ", ".join(f"{k}={v:.4f}" for k, v in metrics.items()),
+            step,
+        )
+        writer.flush()
+        writer.close()
+    except Exception as exc:  # TB logging must never kill the evaluation
+        print(f"[WARN] TensorBoard logging failed: {exc}")
+        return None
+    print(f"[INFO] TensorBoard scalars written to {log_dir} (tags '{prefix}/...', step {step})")
+    return log_dir
+
+
 def main():
     if args_cli.steps <= args_cli.warmup:
         raise ValueError("--steps must be greater than --warmup")
@@ -146,6 +269,12 @@ def main():
     if not args_cli.full_command_range:
         env_cfg.commands.base_velocity.ranges.lin_vel_x = (-0.25, 0.25)
         env_cfg.commands.base_velocity.ranges.lin_vel_y = (-0.25, 0.25)
+    # explicit --cmd_* has the highest priority (over --full_command_range and the narrowing above)
+    for attr, value in (("lin_vel_x", args_cli.cmd_x), ("lin_vel_y", args_cli.cmd_y), ("ang_vel_z", args_cli.cmd_z)):
+        if value is not None:
+            setattr(env_cfg.commands.base_velocity.ranges, attr, (float(value[0]), float(value[1])))
+    if args_cli.no_standing:
+        env_cfg.commands.base_velocity.rel_standing_envs = 0.0
 
     # Apply terrain selection (--terrain) from the shared presets (地形预设). 'flat' keeps the
     # original behavior; 'play' leaves the play env cfg terrain untouched; 'complex' forces a
@@ -153,6 +282,17 @@ def main():
     # are read from the task's own cfg, so every robot is tested on the limits that fit its asset.
     print(f"[INFO] Terrain mode: {apply_terrain(env_cfg, args_cli.terrain, stair_height=args_cli.stair_height)}")
     env_cfg.curriculum = None
+
+    # diagnostics: print what is actually in effect, so a silently-ignored flag (e.g. a missing
+    # env var that should have unlocked the wheels) cannot be mistaken for a real result
+    _ranges = env_cfg.commands.base_velocity.ranges
+    _wheel_scale = getattr(getattr(env_cfg.actions, "WheelVelocityAction", None), "scale", None)
+    print(
+        f"[INFO] Effective command ranges: lin_vel_x={tuple(_ranges.lin_vel_x)} lin_vel_y={tuple(_ranges.lin_vel_y)} "
+        f"ang_vel_z={tuple(_ranges.ang_vel_z)} | rel_standing_envs={env_cfg.commands.base_velocity.rel_standing_envs} "
+        f"| WheelVelocityAction.scale={_wheel_scale} ({'LOCKED' if _wheel_scale == 0.0 else 'free'})"
+    )
+    print(f"[INFO] Eval tag (TB prefix + CSV name): {args_cli.tb_tag or args_cli.terrain}")
 
     agent_cfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
@@ -184,6 +324,9 @@ def main():
     velocity_samples: list[torch.Tensor] = []  # each: (num_envs, 6) for base velocity
     error_xy_sum = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device)
     error_yaw_sum = torch.zeros_like(error_xy_sum)
+    # P0 2026-10-21: progress along commanded x (reject stand-still fake success). Rollback: delete these two lines and the forward_ok AND below.
+    fwd_sum = torch.zeros_like(error_xy_sum)
+    cmd_abs_x_sum = torch.zeros_like(error_xy_sum)
     failed_once = torch.zeros(env.unwrapped.num_envs, dtype=torch.bool, device=env.unwrapped.device)
     recorded_steps = 0
     print(f"[INFO] Recording {args_cli.steps} steps ({args_cli.warmup} warmup steps discarded) ...")
@@ -201,6 +344,8 @@ def main():
             command = env.unwrapped.command_manager.get_command("base_velocity")
             error_xy_sum += torch.linalg.norm(command[:, :2] - robot.data.root_lin_vel_b[:, :2], dim=-1)
             error_yaw_sum += torch.abs(command[:, 2] - robot.data.root_ang_vel_b[:, 2])
+            fwd_sum += torch.sign(command[:, 0]) * robot.data.root_lin_vel_b[:, 0]
+            cmd_abs_x_sum += command[:, 0].abs()
             failed_once |= env.unwrapped.reset_terminated
             recorded_steps += 1
 
@@ -246,8 +391,20 @@ def main():
     per_env_error_yaw = error_yaw_sum / recorded_steps
     mean_error_xy = per_env_error_xy.mean().item()
     mean_error_yaw = per_env_error_yaw.mean().item()
+    # P0 2026-10-21: forward_ok = progress along cmd_x >= 50% of mean |cmd_x| (0>=0 passes for standing-with-zero-cmd).
+    per_env_fwd = fwd_sum / recorded_steps
+    per_env_cmd_abs_x = cmd_abs_x_sum / recorded_steps
+    # 0.7 matches curriculums._episode_forward_ok (2026-10-21 A-cut). Rollback to 0.5.
+    # P0-2 2026-10-22: zero-command envs (|cmd_x| <= 0.01) cannot demonstrate progress and
+    # must not pass for free (same fix as curriculums._episode_forward_ok).
+    forward_ok = (per_env_cmd_abs_x > 1e-2) & (per_env_fwd >= 0.7 * per_env_cmd_abs_x)
+    mean_cmd_abs_x = per_env_cmd_abs_x.mean().item()
+    mean_fwd_along_cmd = per_env_fwd.mean().item()
     success_rate = (
-        (~failed_once) & (per_env_error_xy < 0.25) & (per_env_error_yaw < 0.35)
+        (~failed_once)
+        & (per_env_error_xy < 0.25)
+        & (per_env_error_yaw < 0.35)
+        & forward_ok
     ).float().mean().item()
 
     print(f"  Average forward velocity: {avg_forward_vel:.3f} m/s")
@@ -255,11 +412,28 @@ def main():
     print(f"  Height variance: {height_var:.6f} m²")
     print(f"  Mean XY tracking error: {mean_error_xy:.3f} m/s")
     print(f"  Mean yaw tracking error: {mean_error_yaw:.3f} rad/s")
-    print(f"  Success rate (no early termination, error limits met): {success_rate:.1%}")
+    print(f"  Mean forward along cmd: {mean_fwd_along_cmd:.3f} m/s (cmd |x| mean {mean_cmd_abs_x:.3f})")
+    print(f"  forward_ok fraction: {forward_ok.float().mean().item():.1%}")
+    print(f"  Success rate (no early termination, error limits met, forward_ok): {success_rate:.1%}")
     print(f"  Walking stability: {'Stable' if height_var < 0.01 else 'Unstable'}")
 
-    # save results (default CSV name depends on the terrain mode)
-    default_output = f"{args_cli.terrain}_terrain_stats.csv"
+    # single source of truth for the summary metrics: CSV rows and TensorBoard scalars
+    metrics = {
+        "average_forward_velocity_ms": avg_forward_vel,
+        "average_height_m": avg_height,
+        "height_variance_m2": height_var,
+        "mean_error_xy_ms": mean_error_xy,
+        "mean_error_yaw_rads": mean_error_yaw,
+        "mean_fwd_along_cmd_ms": mean_fwd_along_cmd,
+        "mean_cmd_abs_x_ms": mean_cmd_abs_x,
+        "forward_ok_fraction": forward_ok.float().mean().item(),
+        "success_rate": success_rate,
+    }
+
+    # save results (default CSV name depends on the eval tag, so two evaluations of the same
+    # terrain - e.g. wheel-locked vs free wheels - do not overwrite each other)
+    tag = args_cli.tb_tag or args_cli.terrain
+    default_output = f"{tag}_terrain_stats.csv"
     output_path = args_cli.output or os.path.join(os.path.dirname(resume_path), default_output)
     with open(output_path, mode="w", newline="") as f:
         writer = csv.writer(f)
@@ -269,13 +443,30 @@ def main():
         writer.writerow([])
         writer.writerow(["metric", "value"])
         writer.writerow(["terrain_mode", args_cli.terrain])
-        writer.writerow(["average_forward_velocity_ms", f"{avg_forward_vel:.4f}"])
-        writer.writerow(["average_height_m", f"{avg_height:.4f}"])
-        writer.writerow(["height_variance_m2", f"{height_var:.6f}"])
-        writer.writerow(["mean_error_xy_ms", f"{mean_error_xy:.4f}"])
-        writer.writerow(["mean_error_yaw_rads", f"{mean_error_yaw:.4f}"])
-        writer.writerow(["success_rate", f"{success_rate:.4f}"])
+        writer.writerow(["eval_tag", tag])
+        # the evaluation setup, so the CSV is self-describing (command range actually used,
+        # wheel lock state) - a silently-ignored CLI/env flag must not look like a result
+        writer.writerow(["command_lin_vel_x", f"{tuple(float(v) for v in _ranges.lin_vel_x)}"])
+        writer.writerow(["command_lin_vel_y", f"{tuple(float(v) for v in _ranges.lin_vel_y)}"])
+        writer.writerow(["command_ang_vel_z", f"{tuple(float(v) for v in _ranges.ang_vel_z)}"])
+        writer.writerow(["rel_standing_envs", f"{float(env_cfg.commands.base_velocity.rel_standing_envs)}"])
+        writer.writerow(["wheel_locked", str(_wheel_scale == 0.0)])
+        for key, value in metrics.items():
+            writer.writerow([key, f"{value:.4f}"])
     print(f"[INFO] Statistics saved to: {output_path}")
+
+    # push the same metrics into TensorBoard (same run dir as the training curves)
+    if not args_cli.no_tb:
+        log_to_tensorboard(
+            resume_path,
+            tag,
+            metrics,
+            joint_names,
+            peak,
+            p99,
+            rms,
+            tb_dir=args_cli.tb_dir,
+        )
 
     if args_cli.save_raw:
         raw_path = os.path.splitext(output_path)[0] + "_raw.npz"

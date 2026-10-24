@@ -217,6 +217,8 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 import unitree_rl_lab.tasks  # noqa: F401
 from unitree_rl_lab.utils.export_deploy_cfg import export_deploy_cfg
 
+from command_markers import set_command_markers_visible
+
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
@@ -269,6 +271,7 @@ class FollowCameraWrapper(gym.Wrapper):
         self._focal_backup = None
         self._applied_focal = None
         self._frame = 0
+        self._markers_visible = True
 
     def _set_focal(self, focal):
         """Apply (focal given) or restore (focal None) the focal length on the camera prim."""
@@ -290,6 +293,40 @@ class FollowCameraWrapper(gym.Wrapper):
         except Exception as exc:  # rendering-only fallback, never fatal
             print(f"[WARN] Could not set camera focal length: {exc}")
             return None
+
+    def _set_command_markers(self, visible: bool):
+        """Show/hide the command-term debug markers (green/blue velocity arrows).
+
+        Isaac Lab draws a GREEN arrow (commanded velocity) and a BLUE arrow (measured
+        velocity) 0.5 m above EVERY robot base while the command term has
+        ``debug_vis=True`` (see ``UniformVelocityCommand._debug_vis_callback``). The
+        follow camera sits only ~0.6 m from the dog, so those flat arrow meshes fill the
+        frame and hide the robot - that is the "green/blue blobs piled on the dogs"
+        artifact in the recorded clips (2026-10-20). They are pure visualization, so
+        they are hidden while a clip is captured and restored right afterwards.
+        """
+        if visible == self._markers_visible:
+            return
+        groups = set_command_markers_visible(self.env, visible)
+        self._markers_visible = visible
+        print(f"[INFO] command debug markers ({groups} groups) {'shown' if visible else 'hidden'}")
+
+    def _captures_next_frame(self) -> bool:
+        """True when the inner ``RecordVideo`` grabs a frame during the next step.
+
+        ``gymnasium.wrappers.RecordVideo.step`` renders the frame AFTER the env step and
+        evaluates ``step_trigger`` on the incremented step id, so the trigger has to be
+        replayed here to know whether the upcoming step records a frame.
+        """
+        if getattr(self.env, "recording", False):
+            return True
+        trigger = getattr(self.env, "step_trigger", None)
+        if trigger is None:
+            return False
+        try:
+            return bool(trigger(int(getattr(self.env, "step_id", -1)) + 1))
+        except Exception:
+            return False
 
     def _half_fov_deg(self, focal):
         """Smaller half-FOV (deg) of the camera prim at the given focal length (mm).
@@ -390,6 +427,11 @@ class FollowCameraWrapper(gym.Wrapper):
         return obs, info
 
     def step(self, action):
+        # the frame is captured INSIDE the inner RecordVideo.step(), so the command
+        # markers must already be hidden BEFORE the inner step runs - otherwise the
+        # first frame of a clip still carries them.
+        if self._captures_next_frame():
+            self._set_command_markers(False)
         out = self.env.step(action)
         # only pay for the camera while the inner RecordVideo is actually capturing frames
         recording = bool(getattr(self.env, "recording", False))
@@ -406,8 +448,11 @@ class FollowCameraWrapper(gym.Wrapper):
                     )
                 print(f"[INFO] Recording camera: focal length {applied} mm (收窄视场角 narrow FOV){note}")
             self._update_camera()
-        elif self._focal_backup is not None:
-            self._set_focal(None)  # restore the viewport FOV for the rest of the run
+            self._set_command_markers(False)  # keep the green/blue velocity arrows out of the clip
+        else:
+            self._set_command_markers(True)  # restore once the clip is done
+            if self._focal_backup is not None:
+                self._set_focal(None)  # restore the viewport FOV for the rest of the run
         return out
 
 
@@ -440,23 +485,27 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
-    # velocity-curriculum sidecar (see mdp.curriculums.lin_vel_cmd_levels): fresh runs must not
-    # inherit command ranges from a previous run; resume runs keep the file so the range/gate
-    # survive restarts (the rsl-rl checkpoint does not store command ranges).
-    _curric_state_file = os.path.join(log_root_path, "curriculum_state.json")
-    if not (agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation") and os.path.exists(
-        _curric_state_file
-    ):
-        os.remove(_curric_state_file)
-        print(f"[INFO] Removed stale velocity-curriculum state: {_curric_state_file}")
-    # terrain-levels sidecar (see mdp.curriculums._save_terrain_state): same rule - fresh runs
-    # start from the cfg's max_init_terrain_level draw, resume runs keep the saved levels.
-    _terrain_state_file = os.path.join(log_root_path, "terrain_levels_state.json")
-    if not (agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation") and os.path.exists(
-        _terrain_state_file
-    ):
-        os.remove(_terrain_state_file)
-        print(f"[INFO] Removed stale terrain-levels state: {_terrain_state_file}")
+    # Curriculum sidecars (课程旁路状态文件: terrain levels + velocity command ranges). Fresh runs
+    # must not inherit them; resume runs keep them, because rsl-rl checkpoints store neither.
+    # 2026-10-20: target the files THIS cfg's curriculum terms actually use (the four Airy arms
+    # each have their own), and always keep a ".last" copy - a fresh run used to DESTROY the only
+    # record of pyramid_stairs_level (金字塔楼梯难度等级) and x_max, which is how the
+    # airy_B_replace stairs level 5.05 was lost.
+    _is_fresh = not (agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation")
+    _sidecar_defaults = {
+        "terrain_levels": "terrain_levels_state.json",
+        "lin_vel_cmd_levels": "curriculum_state.json",
+    }
+    _curriculum_cfg = getattr(env_cfg, "curriculum", None)
+    for _term, _default_name in _sidecar_defaults.items():
+        _params = getattr(getattr(_curriculum_cfg, _term, None), "params", None) or {}
+        _state_file = os.path.abspath(_params.get("state_file") or os.path.join(log_root_path, _default_name))
+        if _is_fresh and os.path.exists(_state_file):
+            shutil.copy2(_state_file, _state_file + ".last")
+            os.remove(_state_file)
+            print(f"[INFO] Removed stale {_term} state (copy kept: {_state_file}.last)")
+        print(f"[INFO] {_term} sidecar (旁路状态文件): {_state_file}")
+
     # specify directory for logging runs: {time-stamp}_{run_name}
     log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     # This way, the Ray Tune workflow can extract experiment name.

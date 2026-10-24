@@ -2,7 +2,7 @@
 守护进程scripts/monitor_tb_check.py，每6个小时监控TensorBoard里面的各项训练曲线，发现训练曲线恶化后，自动停止训练，并修改代码，调整超参数，重新训练。
 要求改动尽量小，方便做消融对照实验。
 训练完成后，如何验证训练结果？`unitree_rl_lab` 的 editable 安装实际没有指向本仓库的问题还存在吗
-用中文思考和回答。
+用中文回答。
 
 重点训练task Unitree-GeesunDog-LingsiD30W-Velocity,每条腿上有4个电机，共有 16 个自由度, 摄像头:130度广角 640*360 30fps,激光雷达:Airy 96线 ,测距： 30m@10%反射率,视场角： 视场角： 水平360° × 垂直90°（半球）可连续攀爬台阶高度20cm . https://nv6cj6srn6f.feishu.cn/docx/BmxgdQpNcoP6ryx0cJDcioilnag  查看产品文档.
 总结整个地形和terrain_levels 和lin_vel_cmd_levels的设计逻辑，使用图表展示；
@@ -14,7 +14,8 @@ terrain_levels保存起来,恢复训练时读取出来,可以保证地形等级�
 x_max和Y_max,z-max的关系?
 防止REWARD HAcking
 扭矩effort和角速度范围velocity是否设置太小,导致扭矩饱和?
+轮锁开启（WheelVelocityAction.scale=0），轮子当脚用，12 个腿关节负责爬楼
 检查TensorBoard里面的各项训练曲线，列出每种地形的情况下，训练的情况，给出改进方案。
-
+如何防止站立不动刷分,使用play查看
 每次回答最后回复“汪汪Agent”。考虑更新文档手册README.md，添加验证训练结果的步骤。英文的名词每次出现必须要备注中文名称
 

@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from isaaclab.managers import SceneEntityCfg
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
@@ -27,12 +29,99 @@ def _episode_mean_error(env, env_ids, command_term, metric_name: str) -> torch.T
     return command_term.metrics[metric_name][env_ids] * max_command_step / episode_len
 
 
+def _episode_forward_ok(
+    env, env_ids, command_term, ratio: float = 0.5
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Per-env ``forward_ok``: progress along commanded x >= ``ratio`` * mean |cmd_x|.
+
+    2026-10-21 P0 (stand-still loophole): ``err_xy < 0.25`` passes while the robot is
+    frozen because ``err_xy ≈ |cmd|``. Require real forward progress as well.
+
+    2026-10-22 P0-2 (zero-command vacuous pass): an episode whose mean |cmd_x| is ~0
+    (the ``rel_standing_envs`` standing envs, or a resampled near-zero command) can never
+    demonstrate progress. Before this fix ``0 >= 0`` made every such env a free pass,
+    inflating the lin-gate ``success_rate``, dragging its ``mean_err_xy`` down, and
+    satisfying terrain ``move_up``. Such envs now return ``cmd_active=False`` and are
+    excluded from the command-gated statistics instead of counting as success.
+    Rollback: treat ``cmd_active`` as all-True (pre-2026-10-22 behavior).
+
+    ``ratio``: 0.7 deadlocked the curriculum (SR≈0, x_max frozen at 0.1) - the training
+    default is 0.5; ``test_walk_torque`` passes 0.7 for strict acceptance.
+
+    Returns ``(None, None)`` when the command term has no forward accumulators
+    (stock IsaacLab); callers must fall back to "no gate".
+    """
+    if not (hasattr(command_term, "_fwd_sum") and hasattr(command_term, "_fwd_step_count")):
+        return None, None
+    denom = command_term._fwd_step_count[env_ids].clamp_min(1.0)
+    mean_fwd = command_term._fwd_sum[env_ids] / denom
+    mean_cmd_abs_x = command_term._cmd_abs_x_sum[env_ids] / denom
+    # episode-mean |cmd_x| <= 0.01 m/s counts as "no forward command" (standing env).
+    cmd_active = mean_cmd_abs_x > 1e-2
+    return cmd_active & (mean_fwd >= ratio * mean_cmd_abs_x), cmd_active
+
+
+def _terrain_layout_signature(env, terrain) -> dict:
+    """Terrain-grid fingerprint: the column -> sub-terrain mapping depends on all of these."""
+    cfg = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
+    if cfg is None:
+        return {}
+    return {
+        "num_rows": int(cfg.num_rows),
+        "num_cols": int(cfg.num_cols),
+        "sub_terrains": {name: float(term.proportion) for name, term in cfg.sub_terrains.items()},
+    }
+
+
+def _terrain_env_groups(env, terrain) -> dict[str, list[int]]:
+    """Group the CURRENT envs by sub-terrain name (pyramid_stairs / flat / random_rough / ...).
+
+    ``terrain.terrain_types`` is ``env_id // (num_envs / num_cols)``, so the env -> column mapping
+    changes when ``num_envs`` changes; the column -> sub-terrain mapping (driven by ``proportion``)
+    does not. Grouping by name is the only restore route that survives a ``--num_envs`` change.
+    """
+    columns = _terrain_columns_by_name(env)
+    if not columns:
+        return {}
+    column_to_name = {column: name for name, cols in columns.items() for column in cols}
+    groups: dict[str, list[int]] = {name: [] for name in columns}
+    for env_id, column in enumerate(terrain.terrain_types.tolist()):
+        name = column_to_name.get(int(column))
+        if name is not None:
+            groups[name].append(env_id)
+    return {name: ids for name, ids in groups.items() if ids}
+
+
+def _terrain_level_by_type(env, terrain) -> dict[str, float]:
+    """Mean terrain level per sub-terrain name == the TB ``..._<name>_level`` curves."""
+    levels = terrain.terrain_levels
+    return {name: round(float(torch.mean(levels[ids].float())), 4) for name, ids in _terrain_env_groups(env, terrain).items()}
+
+
+def _cycled_sample(pool_size: int, want: int) -> list[int]:
+    """Index sequence walking the saved level pool as evenly as possible (mean-preserving)."""
+    order = torch.randperm(pool_size).tolist()
+    if want <= pool_size:
+        return order[:want]
+    out: list[int] = []
+    while len(out) < want:
+        out.extend(order)
+    return out[:want]
+
+
 def _load_terrain_state(env, terrain, state_file: str | None) -> None:
     """Restore per-env terrain levels once per process (rsl-rl checkpoints do not store them).
 
-    Skipped with a warning when the saved ``num_envs`` / ``max_level`` do not match the current
-    setup (the env -> terrain-column mapping depends on num_envs, so a partial restore would
-    assign levels to the wrong columns).
+    Two restore routes (2026-10-20), both keeping the terrain level from dropping:
+
+    1. **exact** - saved ``num_envs``/``max_level`` match: restore the per-env levels verbatim.
+    2. **by type** - ``num_envs`` changed (e.g. 4096 -> 3096) while the terrain layout
+       (``num_rows``/``num_cols``/``proportion``) is unchanged: resample every env from the saved
+       level pool of ITS OWN sub-terrain, so ``pyramid_stairs_level`` (金字塔楼梯难度等级) comes back
+       at the saved value instead of collapsing to ``max_init_terrain_level``.
+
+    Anything else (layout changed, corrupt file, a pre-2026-10-20 file without ``levels_by_type``
+    under a changed ``num_envs``) keeps the random initial levels and prints a WARN - never aborts.
     """
     if getattr(terrain, "_terrain_state_loaded", False):
         return
@@ -43,38 +132,86 @@ def _load_terrain_state(env, terrain, state_file: str | None) -> None:
         with open(state_file) as f:
             saved = json.load(f)
         levels = saved.get("levels")
-        if (
-            levels is None
-            or int(saved.get("num_envs", -1)) != int(env.num_envs)
-            or int(saved.get("max_level", -1)) != int(terrain.max_terrain_level)
-        ):
-            print(
-                f"[WARN] terrain-levels state {state_file} does not match this run"
-                f" (num_envs/max_level changed); keeping the random initial levels."
-            )
-            return
+        levels_by_type = saved.get("levels_by_type")
+        max_level = int(terrain.max_terrain_level)
+        max_ok = int(saved.get("max_level", -1)) == max_level
+        layout = saved.get("layout") or {}
+        cur_layout = _terrain_layout_signature(env, terrain)
+        layout_ok = bool(layout) and layout == cur_layout
         device = terrain.terrain_levels.device
-        terrain.terrain_levels[:] = torch.tensor(levels, dtype=torch.long, device=device)
-        terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
+
+        def _apply(levels_tensor, tag):
+            terrain.terrain_levels[:] = levels_tensor.clamp(0, max_level - 1)
+            terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
+            by_type_str = " ".join(f"{n}={v:.2f}" for n, v in sorted(_terrain_level_by_type(env, terrain).items()))
+            print(
+                f"[INFO] Restored terrain levels ({tag}) from {state_file}:"
+                f" mean={float(terrain.terrain_levels.float().mean()):.2f} | {by_type_str}"
+                f" (saved at step {saved.get('step')}, num_envs {saved.get('num_envs')})"
+            )
+
+        # Route 1: exact per-env restore (num_envs unchanged).
+        if levels is not None and int(saved.get("num_envs", -1)) == int(env.num_envs) and max_ok:
+            _apply(torch.tensor(levels, dtype=torch.long, device=device), "exact")
+            return
+
+        # Route 2: per-sub-terrain restore (num_envs changed, terrain layout identical).
+        # No num_envs-divisibility requirement: terrain_types = floor(env_id / (num_envs/num_cols))
+        # is deterministic for ANY num_envs, it just makes the per-column env counts uneven.
+        num_cols = int(cur_layout.get("num_cols", 0))
+        groups = _terrain_env_groups(env, terrain)
+        if (
+            levels_by_type
+            and max_ok
+            and layout_ok
+            and num_cols > 0
+            and groups
+            and all(levels_by_type.get(name) for name in groups)
+        ):
+            restored = torch.zeros(int(env.num_envs), dtype=torch.long, device=device)
+            for name, env_ids in groups.items():
+                pool = [int(x) for x in levels_by_type[name]]
+                for slot, pool_index in enumerate(_cycled_sample(len(pool), len(env_ids))):
+                    restored[env_ids[slot]] = pool[pool_index]
+            _apply(restored, f"by type, num_envs {saved.get('num_envs')} -> {env.num_envs}")
+            return
+
         print(
-            f"[INFO] Restored terrain levels from {state_file}:"
-            f" mean={float(terrain.terrain_levels.float().mean()):.2f} (saved at step {saved.get('step')})"
+            f"[WARN] terrain-levels state {state_file} does not match this run"
+            f" (num_envs {saved.get('num_envs')} -> {env.num_envs}, max_level {saved.get('max_level')} ->"
+            f" {max_level}, layout {'same' if layout_ok else 'changed'}); keeping the random initial levels."
         )
     except Exception as exc:  # a corrupt sidecar must never abort training
         print(f"[WARN] Could not read terrain-levels state {state_file}: {exc!r}")
 
 
 def _save_terrain_state(env, terrain, state_file: str | None) -> None:
-    """Persist per-env terrain levels so a restart does not send every env back to level 0."""
+    """Persist per-env terrain levels so a restart does not send every env back to level 0.
+
+    Besides the per-env ``levels`` array, the file also carries the per-sub-terrain level pool and
+    means (``levels_by_type`` / ``by_type`` - ``by_type["pyramid_stairs"]`` IS the TB
+    ``Curriculum/terrain_performance_by_type/pyramid_stairs_level`` value) plus the terrain layout
+    signature, so a resume with a DIFFERENT ``--num_envs`` restores the stairs level (楼梯难度等级)
+    instead of silently resetting it to ``max_init_terrain_level`` (2026-10-20).
+    """
     if not state_file:
         return
     try:
+        groups = _terrain_env_groups(env, terrain)
+        levels_list = [int(x) for x in terrain.terrain_levels.tolist()]
         payload = {
-            "levels": [int(x) for x in terrain.terrain_levels.tolist()],
+            "levels": levels_list,
             "num_envs": int(env.num_envs),
             "max_level": int(terrain.max_terrain_level),
             "step": int(env.common_step_counter),
             "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "types": [int(x) for x in terrain.terrain_types.tolist()],
+            "by_type": {
+                name: round(float(torch.mean(terrain.terrain_levels[ids].float())), 4)
+                for name, ids in groups.items()
+            },
+            "levels_by_type": {name: [levels_list[i] for i in ids] for name, ids in groups.items()},
+            "layout": _terrain_layout_signature(env, terrain),
         }
         path = Path(state_file)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +231,9 @@ def terrain_levels_vel_strict(
     min_x_max_for_move_up: float = 0.0,
     cmd_freeze_windows: int = 0,
     cmd_freeze_level_gain: float = 1.0,
+    forward_ok_ratio: float = 0.5,
+    demote_no_forward: bool = False,
+    demote_warmup_windows: float = 0.0,
     state_file: str | None = None,
     state_save_interval: int = 1000,
 ) -> torch.Tensor:
@@ -110,6 +250,13 @@ def terrain_levels_vel_strict(
       widened nor narrowed) for this many gated-eval windows - a settle period on the new
       terrain difficulty before the command range keeps widening. Triggered on the *mean*
       level, not per-env level-ups (which happen on almost every episode during a climb).
+    * ``demote_warmup_windows``: 地形降级冷静期 (demotion warm-up). For the first
+      ``demote_warmup_windows`` EPISODE LENGTHS of env steps after the process starts, terrain
+      levels may only move UP - ``move_down`` is suppressed. Rationale (measured 2026-10-24):
+      a resumed run re-creates all envs in lockstep, so for the first ~1 episode length no
+      episode ends by timeout - only the FALLEN envs reach this term. Demoting on that
+      all-failures sample snowballs (6.12 -> 1.91 in 16 iterations, reward 24.5 -> -5.7).
+      Default 0.0 = OFF (GO2 / dog1 campaigns unchanged).
     """
     terrain = env.scene.terrain
     command_term = env.command_manager.get_term(command_name)
@@ -119,14 +266,41 @@ def terrain_levels_vel_strict(
     valid = env.episode_length_buf[env_ids] > 0
     time_outs = getattr(env, "reset_time_outs", None)
     survived = torch.ones_like(valid) if time_outs is None else time_outs[env_ids].bool()
+    # P0 2026-10-21: stand-still must not promote (forward_ok). None = tracking unavailable.
+    forward_ok, cmd_active = _episode_forward_ok(env, env_ids, command_term, forward_ok_ratio)
 
     x_max = float(command_term.cfg.ranges.lin_vel_x[1])
     gate_open = x_max >= min_x_max_for_move_up
     move_up = valid & survived & (err_xy < move_up_xy) & (err_yaw < move_up_yaw) & gate_open
+    if forward_ok is not None:
+        move_up = move_up & forward_ok
     # gate freezes BOTH directions: with only move_up gated, occasional move_down events
     # (falls, error tails) would slowly drain every env to level 0 - the intent is a true
     # freeze of the terrain levels while the command range is still climbing.
     move_down = valid & ((~survived) | (err_xy > move_down_xy) | (err_yaw > move_down_yaw)) & gate_open
+    if demote_no_forward and forward_ok is not None and cmd_active is not None:
+        # OPT-IN (2026-10-22, default OFF): demote envs that WERE commanded to move forward
+        # but did not progress, so stairs drop to a difficulty the robot can traverse.
+        # Default OFF because with the wheel lock (WheelVelocityAction scale=0) plus the
+        # joint_pos penalty the policy can stand still for reward: demoting on no-progress
+        # then crushed terrain_levels 5.0 -> 0.005 in one day (measured 2026-10-21/22).
+        # Only envs with a real forward command are demoted; standing envs (cmd_x ~ 0,
+        # cmd_active=False) must not be punished for not moving.
+        move_down = move_down | (valid & cmd_active & ~forward_ok & gate_open)
+    if demote_warmup_windows > 0.0:
+        # 地形降级冷静期: see the docstring. Cheap check first (no tensor ops unless configured).
+        warmup_steps = demote_warmup_windows * float(env.max_episode_length)
+        if float(env.common_step_counter) < warmup_steps:
+            if bool(move_down.any()):
+                move_down = torch.zeros_like(move_down)
+            if not getattr(terrain, "_demote_warmup_logged", False):
+                terrain._demote_warmup_logged = True
+                print(
+                    f"[INFO] Terrain demote warm-up (地形降级冷静期): only level-UP for the first"
+                    f" {warmup_steps:.0f} env steps ({demote_warmup_windows:g} x episode length,"
+                    f" now at step {int(env.common_step_counter)}). Lockstep resets would otherwise"
+                    f" demote on an all-failures sample."
+                )
     terrain.update_env_origins(env_ids, move_up, move_down & ~move_up)
 
     if cmd_freeze_windows > 0:
@@ -151,6 +325,40 @@ def terrain_levels_vel_strict(
     return torch.mean(terrain.terrain_levels.float())
 
 
+def terrain_levels_vel_state(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    state_file: str | None = None,
+    state_save_interval: int = 1000,
+) -> torch.Tensor:
+    """Stock ``terrain_levels_vel`` (distance-walked curriculum) + a terrain-level sidecar.
+
+    G1 / H1 keep IsaacLab's stock distance-based curriculum, so persistence is added as a thin
+    wrapper instead of switching those tasks to ``terrain_levels_vel_strict`` (which would change
+    their promotion/demotion rules). Load/save is identical to the strict variant: a resume
+    restores the per-env levels instead of re-climbing from ``max_init_terrain_level``, and
+    ``train.py`` removes the file on a fresh run.
+
+    Returns:
+        The mean terrain level (same value the stock term returns).
+    """
+    from isaaclab_tasks.manager_based.locomotion.velocity.mdp.curriculums import (
+        terrain_levels_vel as _stock_terrain_levels_vel,
+    )
+
+    terrain = env.scene.terrain
+    _load_terrain_state(env, terrain, state_file)
+    mean_level = _stock_terrain_levels_vel(env, env_ids, asset_cfg)
+    if state_file:
+        step = int(env.common_step_counter)
+        last_save = getattr(terrain, "_terrain_state_last_save", -(10**9))
+        if step - last_save >= state_save_interval:
+            terrain._terrain_state_last_save = step
+            _save_terrain_state(env, terrain, state_file)
+    return mean_level
+
+
 def _terrain_columns_by_name(env) -> dict[str, list[int]]:
     """Map generated terrain columns back to sub-terrain names."""
     cfg = env.scene.terrain.cfg.terrain_generator
@@ -173,8 +381,16 @@ def terrain_performance_by_type(
     command_name: str = "base_velocity",
     success_xy: float = 0.25,
     success_yaw: float = 0.35,
+    forward_ok_ratio: float = 0.5,
 ) -> dict[str, torch.Tensor]:
-    """Log terrain level, tracking errors and success rate for every terrain type."""
+    """Log terrain level, tracking errors and success rate for every terrain type.
+
+    2026-10-22 P0-2: episodes with a ~zero x command (standing envs, resampled near-zero
+    commands) cannot demonstrate forward progress, so they are excluded from BOTH the
+    success numerator and the error means. NOTE this shifts the TB values by the standing
+    share (~10% lower success, ~equal error) versus pre-2026-10-22 runs - read old and new
+    curves with that offset in mind.
+    """
     terrain = env.scene.terrain
     command_term = env.command_manager.get_term(command_name)
     err_xy = _episode_mean_error(env, env_ids, command_term, "error_vel_xy")
@@ -182,6 +398,9 @@ def terrain_performance_by_type(
     valid = env.episode_length_buf[env_ids] > 0
     time_outs = getattr(env, "reset_time_outs", None)
     survived = torch.ones_like(valid) if time_outs is None else time_outs[env_ids].bool()
+    forward_ok, cmd_active = _episode_forward_ok(  # P0 2026-10-21
+        env, env_ids, command_term, forward_ok_ratio
+    )
     result = {}
 
     for name, columns in _terrain_columns_by_name(env).items():
@@ -194,14 +413,20 @@ def terrain_performance_by_type(
             result[f"{name}_level"] = torch.mean(terrain.terrain_levels[all_mask].float())
         reset_mask &= valid
         if torch.any(reset_mask):
-            success = (
-                survived[reset_mask]
-                & (err_xy[reset_mask] < success_xy)
-                & (err_yaw[reset_mask] < success_yaw)
-            )
-            result[f"{name}_error_xy"] = torch.mean(err_xy[reset_mask])
-            result[f"{name}_error_yaw"] = torch.mean(err_yaw[reset_mask])
-            result[f"{name}_success_rate"] = torch.mean(success.float())
+            # P0-2 2026-10-22: zero-command episodes cannot show progress; drop them from
+            # the statistics instead of letting them pass for free (0 >= 0).
+            stat_mask = reset_mask if cmd_active is None else (reset_mask & cmd_active)
+            if torch.any(stat_mask):
+                success = (
+                    survived[stat_mask]
+                    & (err_xy[stat_mask] < success_xy)
+                    & (err_yaw[stat_mask] < success_yaw)
+                )
+                if forward_ok is not None:
+                    success = success & forward_ok[stat_mask]
+                result[f"{name}_error_xy"] = torch.mean(err_xy[stat_mask])
+                result[f"{name}_error_yaw"] = torch.mean(err_yaw[stat_mask])
+                result[f"{name}_success_rate"] = torch.mean(success.float())
     return result
 
 
@@ -242,6 +467,11 @@ def _ensure_gate_state(command_term) -> None:
         command_term._gate_streak = 0
         command_term._gate_yaw_streak = 0
         command_term._gate_loaded = False
+        # P0-2 2026-10-22: lin-gate statistics restricted to envs with a real forward
+        # command (zero-command / standing envs excluded from numerator AND denominator).
+        command_term._gate_cmd_total = 0.0
+        command_term._gate_cmd_lin_success = 0.0
+        command_term._gate_cmd_err_xy = 0.0
 
 
 def _load_gate_state(command_term, state_file: str | None) -> None:
@@ -300,6 +530,7 @@ def gated_lin_vel_cmd_levels(
     min_env_steps: int = 12000,
     min_episodes: int = 4000,
     hold: int = 2,
+    forward_ok_ratio: float = 0.5,
 ) -> dict[str, float]:
     """Gated curriculum for the linear-velocity (xy) and yaw command ranges.
 
@@ -344,8 +575,20 @@ def gated_lin_vel_cmd_levels(
     valid = env.episode_length_buf[env_ids] > 0
     time_outs = getattr(env, "reset_time_outs", None)
     survived = torch.ones_like(valid) if time_outs is None else time_outs[env_ids].bool()
+    forward_ok, cmd_active = _episode_forward_ok(  # P0 2026-10-21
+        env, env_ids, command_term, forward_ok_ratio
+    )
     lin_success = survived & (err_xy < success_xy)
+    if forward_ok is not None:
+        # P0: reject stand-still fake success (err_xy ≈ |cmd| < success_xy while frozen)
+        lin_success = lin_success & forward_ok
     yaw_success = survived & (err_yaw < success_yaw)
+    # P0-2 2026-10-22: envs whose episode-mean |cmd_x| is ~0 (standing envs, near-zero
+    # resampled commands) cannot demonstrate progress; counting them inflated success_rate
+    # and dragged mean_err_xy down. The lin GATE therefore evaluates only over commanded
+    # envs (``_gate_cmd_*``); the TB ``success_rate`` / ``mean_err_xy`` keys keep the
+    # all-env values so existing curves stay comparable.
+    active = valid if cmd_active is None else (valid & cmd_active)
 
     command_term._gate_total += float(valid.sum().item())
     command_term._gate_survived += float((survived & valid).sum().item())
@@ -353,15 +596,21 @@ def gated_lin_vel_cmd_levels(
     command_term._gate_yaw_success += float((yaw_success & valid).sum().item())
     command_term._gate_err_xy += float(err_xy[valid].sum().item())
     command_term._gate_err_yaw += float(err_yaw[valid].sum().item())
+    command_term._gate_cmd_total += float(active.sum().item())
+    command_term._gate_cmd_lin_success += float((lin_success & active).sum().item())
+    command_term._gate_cmd_err_xy += float(err_xy[active].sum().item())
 
     elapsed = env.common_step_counter - command_term._gate_last_eval
     if elapsed >= min_env_steps and command_term._gate_total >= float(min_episodes):
         total = command_term._gate_total
         time_out_rate = command_term._gate_survived / total
-        lin_rate = command_term._gate_lin_success / total
         yaw_rate = command_term._gate_yaw_success / total
-        mean_err_xy = command_term._gate_err_xy / total
         mean_err_yaw = command_term._gate_err_yaw / total
+        # P0-2: gate inputs restricted to envs that actually had a forward command
+        # (zero-command / standing envs excluded - see the accumulation block above).
+        cmd_total = command_term._gate_cmd_total
+        gate_lin_rate = command_term._gate_cmd_lin_success / cmd_total if cmd_total > 0 else 0.0
+        gate_err_xy = command_term._gate_cmd_err_xy / cmd_total if cmd_total > 0 else float("inf")
 
         freeze = int(getattr(command_term, "_cmd_freeze_windows", 0))
         if freeze > 0:
@@ -372,7 +621,7 @@ def gated_lin_vel_cmd_levels(
             command_term._cmd_freeze_windows = freeze - 1
             command_term._gate_streak = 0
             print(f"[INFO] x command range frozen ({freeze - 1} eval windows left)")
-        elif lin_rate >= min_success_rate and time_out_rate >= min_success_rate and mean_err_xy <= success_xy:
+        elif gate_lin_rate >= min_success_rate and time_out_rate >= min_success_rate and gate_err_xy <= success_xy:
             command_term._gate_streak += 1
         else:
             command_term._gate_streak = 0
@@ -408,8 +657,12 @@ def gated_lin_vel_cmd_levels(
         command_term._gate_yaw_success = 0.0
         command_term._gate_err_xy = 0.0
         command_term._gate_err_yaw = 0.0
+        command_term._gate_cmd_total = 0.0
+        command_term._gate_cmd_lin_success = 0.0
+        command_term._gate_cmd_err_xy = 0.0
 
     window = command_term._gate_total if command_term._gate_total > 0 else 1.0
+    cmd_window = command_term._gate_cmd_total if command_term._gate_cmd_total > 0 else 1.0
     return {
         "x_max": float(ranges.lin_vel_x[1]),
         "y_max": float(ranges.lin_vel_y[1]),
@@ -422,6 +675,9 @@ def gated_lin_vel_cmd_levels(
         "streak": float(command_term._gate_streak),
         "yaw_streak": float(command_term._gate_yaw_streak),
         "x_frozen": float(getattr(command_term, "_cmd_freeze_windows", 0)),
+        # P0-2 2026-10-22: the values the x gate actually decides on (commanded envs only).
+        "cmd_success_rate": command_term._gate_cmd_lin_success / cmd_window,
+        "cmd_mean_err_xy": command_term._gate_cmd_err_xy / cmd_window,
     }
 
 

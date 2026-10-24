@@ -254,10 +254,18 @@ class ObservationsCfg:
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100))
         joint_effort = ObsTerm(func=mdp.joint_effort, scale=0.01, clip=(-100, 100))
         last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))
-        # height_scanner (ABLATION: critic-only privileged obs, policy obs unchanged)
+        # height_scanner (高度扫描传感器) ABLATION: critic-only privileged obs, policy obs unchanged.
+        # OFFSET REVERT (2026-10-16, MEASURED on lingsi_d30w - see the long comment in
+        # lingsi_d30w/velocity_env_cfg.py): the 20 m ``OffsetCfg(pos=(0,0,20))`` only raises the ray
+        # START, it does NOT enter ``sensor.data.pos_w`` (measured pos_w z = 0.61 = trunk height).
+        # So ``mdp.height_scan`` = base_z - hit_z - offset and the correct offset is the DEFAULT 0.5
+        # -> [-0.41, +0.11], which clip=(-1.0, 1.0) passes through alive.
+        # The 2026-10-15 "fix" (offset=20.5) assumed pos_w = base_z + 20 and instead pinned ALL 187
+        # cells to the clip floor -1.0 (measured 187/187 after 20 steps). Reverted.
+        # Kept IDENTICAL to the lingsi_d30w task so the GO2 <-> D30W cross-body ablation stays valid.
         height_scanner = ObsTerm(func=mdp.height_scan,
-            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
-            clip=(-1.0, 5.0),
+            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
+            clip=(-1.0, 1.0),
         )
 
         # def __post_init__(self):
@@ -361,7 +369,14 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_strict)
+    # terrain-level sidecar (2026-10-22): a resume restores the per-env levels instead of
+    # re-climbing from max_init_terrain_level (rsl-rl checkpoints do not store them) - the same
+    # persistence the lin_vel_cmd_levels sidecar below already gives the command range.
+    # train.py removes the file on a fresh run and keeps it on --resume.
+    terrain_levels = CurrTerm(
+        func=mdp.terrain_levels_vel_strict,
+        params={"state_file": "logs/rsl_rl/unitree_go2_velocity_ht/terrain_levels_state.json"},
+    )
     terrain_performance_by_type = CurrTerm(func=mdp.terrain_performance_by_type)
     # Gated command curriculum: hold the linear (xy) and yaw ranges until tracking + survival
     # are solid, then widen x by a small step (y stays frozen) and/or ang_vel_z. The two axes
@@ -370,7 +385,12 @@ class CurriculumCfg:
     lin_vel_cmd_levels = CurrTerm(
         func=mdp.gated_lin_vel_cmd_levels,
         params={
-            "state_file": "logs/rsl_rl/unitree_go2_velocity/curriculum_state.json",
+            # 2026-10-22 P1 fix: this must point at the RUN directory of the only registered
+            # task (Unitree-Go2-Velocity -> UnitreeGo2PPORunnerCfg.experiment_name =
+            # "unitree_go2_velocity_ht"). The old "unitree_go2_velocity" path never matched a
+            # run, so the command-range sidecar was silently written to / restored from a
+            # directory no run ever uses.
+            "state_file": "logs/rsl_rl/unitree_go2_velocity_ht/curriculum_state.json",
             "lin_increment": 0.05,
             "yaw_increment": 0.1,
             "success_xy": 0.25,

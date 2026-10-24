@@ -134,6 +134,46 @@ def foot_clearance_reward(
     return torch.exp(-torch.sum(reward, dim=1) / std)
 
 
+def foot_clearance_air(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    target_height: float,
+    std: float,
+    tanh_mult: float,
+    command_name: str = "base_velocity",
+    min_command_speed: float = 0.0,
+) -> torch.Tensor:
+    """P1 2026-10-21: like foot_clearance_reward but only while the foot is airborne.
+
+    Stock foot_clearance_reward pays 1.0 when feet are on the ground (tanh=0), so rolling
+    at wheel-radius height collects full reward and never lifts. Gating on current_air_time
+    makes the term pay only for real wheel lifts (stairs: clear the 0.23 m riser).
+
+    2026-10-23 P0-3: the air gate alone still pays out for lifting the legs **in place**
+    (measured +0.594 per episode with the wheels locked, while the robot made no forward
+    progress at all). The optional ``min_command_speed`` gate adds a second condition: the
+    env must actually be commanded to move (|cmd_xy| >= threshold) for the lift to be paid.
+    ``min_command_speed = 0.0`` (default) keeps the old behaviour for every other task.
+    Rollback: use mdp.foot_clearance_reward instead and delete this function.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    in_air = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids] > 0
+    foot_z_target_error = torch.square(asset.data.body_pos_w[:, asset_cfg.body_ids, 2] - target_height)
+    foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2))
+    cost = foot_z_target_error * foot_velocity_tanh
+    reward = torch.exp(-torch.sum(cost, dim=1) / std)
+    if min_command_speed > 0.0:
+        command = env.command_manager.get_command(command_name)
+        commanded = torch.linalg.norm(command[:, :2], dim=1) >= min_command_speed
+    else:
+        commanded = torch.ones_like(in_air[:, 0])
+    # all feet planted (rolling / standing): zero, no free lunch
+    # not commanded to move: zero as well - lifting in place is not progress
+    return torch.where(in_air.any(dim=1) & commanded, reward, torch.zeros_like(reward))
+
+
 def feet_too_near(
     env: ManagerBasedRLEnv, threshold: float = 0.2, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:

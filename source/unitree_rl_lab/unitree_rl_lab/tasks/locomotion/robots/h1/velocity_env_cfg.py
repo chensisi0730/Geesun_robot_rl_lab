@@ -361,7 +361,14 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
+    # terrain-level sidecar (2026-10-22): a resume restores the per-env levels instead of
+    # re-climbing from max_init_terrain_level (rsl-rl checkpoints do not store them). The
+    # curriculum itself stays the stock distance-based one - only persistence is added.
+    # train.py removes the file on a fresh run and keeps it on --resume.
+    terrain_levels = CurrTerm(
+        func=mdp.terrain_levels_vel_state,
+        params={"state_file": "logs/rsl_rl/unitree_h1_velocity/terrain_levels_state.json"},
+    )
     lin_vel_cmd_levels = CurrTerm(mdp.lin_vel_cmd_levels)
 
 

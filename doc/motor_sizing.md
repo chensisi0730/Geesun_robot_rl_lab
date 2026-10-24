@@ -82,12 +82,12 @@ mean_error_xy 0.104–0.106 m/s，mean_error_yaw 0.149–0.166 rad/s。
 ```bash
 # 平地名义工况
 conda run -n env_isaaclab_sim51 python -u scripts/rsl_rl/test_walk_torque.py \
-    --task Unitree-GeesunDog-Velocity --terrain flat --steps 1000
+    --task Unitree-GeesunDog-Dog1-Velocity --terrain flat --steps 1000
 
 # 复杂地形压力工况（在 unitree_actuators.py 临时把 Y1/Y2 调大后运行，测毕恢复）
 conda run -n env_isaaclab_sim51 python -u scripts/rsl_rl/test_walk_torque.py \
-    --task Unitree-GeesunDog-Velocity --terrain complex --steps 1000 \
-    --output logs/rsl_rl/unitree_geesun_dog/<run>/complex_terrain_stats_unsaturated.csv
+    --task Unitree-GeesunDog-Dog1-Velocity --terrain complex --steps 1000 \
+    --output logs/rsl_rl/unitree_geesun_dog1/<run>/complex_terrain_stats_unsaturated.csv
 ```
 
 原始 CSV 位置：`logs/rsl_rl/unitree_geesun_dog/2026-10-12_20-24-42/`

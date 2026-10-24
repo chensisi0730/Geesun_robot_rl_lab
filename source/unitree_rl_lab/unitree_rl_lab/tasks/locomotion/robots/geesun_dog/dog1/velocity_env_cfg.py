@@ -404,7 +404,14 @@ class CurriculumCfg:
     of terrain competence during the 2026-10-12 collapse.
     """
 
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_strict)
+    # terrain-level sidecar (2026-10-22): a resume restores the per-env levels instead of
+    # re-climbing from max_init_terrain_level (rsl-rl checkpoints do not store them) - the same
+    # persistence the lin_vel_cmd_levels sidecar below already gives the command range.
+    # train.py removes the file on a fresh run and keeps it on --resume.
+    terrain_levels = CurrTerm(
+        func=mdp.terrain_levels_vel_strict,
+        params={"state_file": "logs/rsl_rl/unitree_geesun_dog1/terrain_levels_state.json"},
+    )
     terrain_performance_by_type = CurrTerm(func=mdp.terrain_performance_by_type)
     lin_vel_cmd_levels = CurrTerm(
         func=mdp.gated_lin_vel_cmd_levels,

@@ -183,8 +183,10 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
+import glob
 import gymnasium as gym
 import os
+import sys
 import time
 import torch
 
@@ -199,6 +201,76 @@ from isaaclab_tasks.utils import get_checkpoint_path
 
 import unitree_rl_lab.tasks  # noqa: F401
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
+def _newest_checkpoints(log_root_path: str, max_runs: int = 4) -> list[str]:
+    """Return the newest checkpoint (检查点) of each of the <max_runs> newest run directories."""
+    found = []
+    run_dirs = sorted(glob.glob(os.path.join(log_root_path, "*")), key=os.path.getmtime, reverse=True)
+    for run_dir in run_dirs[:max_runs]:
+        files = sorted(glob.glob(os.path.join(run_dir, "model_*.pt")), key=os.path.getmtime)
+        if files:
+            found.append(files[-1])
+    return found
+
+
+def resolve_play_checkpoint(
+    checkpoint: str | None, log_root_path: str, agent_cfg: RslRlOnPolicyRunnerCfg
+) -> str:
+    """Resolve ``--checkpoint`` (检查点路径) to an existing local .pt, with an actionable error.
+
+    ``isaaclab.utils.assets.retrieve_file_path`` (Isaac Lab 文件定位工具) only accepts a path that
+    already exists locally (or a Nucleus URL) and otherwise raises a bare ``FileNotFoundError``.
+    The classic shell trap is ``--checkpoint=$RUN/model_10400.pt`` with ``$RUN`` unset: it expands
+    to ``/model_10400.pt`` and playback dies with no hint of what should have been passed.
+
+    Documented behaviour is preserved, diagnostics are added:
+
+    * empty / omitted  -> newest run's newest checkpoint (identical to omitting ``--checkpoint``).
+    * path exists      -> absolute path. Relative paths resolve against the current working
+      directory, so the documented "run from the repo root" convention is unchanged.
+    * Nucleus URL      -> delegated to :func:`retrieve_file_path` exactly as before.
+    * bare file name   -> searched as ``<experiment_dir>/*/model_<ITER>.pt``, newest run wins.
+    * nothing matched  -> print the path it resolved to, the likely cause and the available
+      candidates, then ``sys.exit(1)`` instead of dumping a traceback.
+    """
+    ckpt = (checkpoint or "").strip()
+    # 1) no --checkpoint -> newest run / newest checkpoint, same as the documented default
+    if not ckpt:
+        return get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+    # 2) Nucleus URL (https://...) -> let the upstream helper download it
+    if "://" in ckpt:
+        return retrieve_file_path(ckpt)
+    # 3) a path that exists locally
+    if os.path.isfile(ckpt):
+        return os.path.abspath(ckpt)
+    # 4) bare checkpoint file name -> look for it inside every run dir of this experiment
+    if os.path.basename(ckpt) == ckpt and ckpt.endswith(".pt"):
+        hits = sorted(glob.glob(os.path.join(log_root_path, "*", ckpt)), key=os.path.getmtime)
+        if hits:
+            print(
+                f"[INFO] --checkpoint given as a bare file name: found {len(hits)} match(es) under "
+                f"{log_root_path}/*/{ckpt}; using the newest run -> {hits[-1]}"
+            )
+            return os.path.abspath(hits[-1])
+    # 5) nothing matched -> actionable error, no traceback
+    print(f"[ERROR] --checkpoint={checkpoint!r} does not resolve to a file.", flush=True)
+    print(f"[ERROR] Resolved path would be: {os.path.abspath(ckpt)}", flush=True)
+    if ckpt.startswith(os.sep) and os.path.basename(ckpt) == ckpt.lstrip(os.sep):
+        print(
+            "[ERROR] Likely cause: an EMPTY shell variable -- --checkpoint=$RUN/model_xxx.pt with $RUN\n"
+            "        unset expands to '/model_xxx.pt'. Set EXP/RUN first (see README '验证训练结果'),\n"
+            "        or pass the full path. Paste the whole block, not only the python line.",
+            flush=True,
+        )
+    print(f"[ERROR] Experiment directory: {log_root_path}", flush=True)
+    candidates = _newest_checkpoints(log_root_path)
+    if candidates:
+        print("[ERROR] Newest checkpoint (检查点) per run:", flush=True)
+        for cand in candidates:
+            print(f"          {cand}", flush=True)
+    print("[ERROR] Fix: --checkpoint <experiment_dir>/<run_id>/model_<ITER>.pt", flush=True)
+    sys.exit(1)
+
+
 
 
 def main():
@@ -207,6 +279,8 @@ def main():
     # (after the AppLauncher has booted) because isaaclab.terrains needs the running kit app.
     from snapshot_cfg import load_snapshot_env_cfg
     from terrain_presets import apply_terrain
+
+    from command_markers import set_command_markers_visible
 
     # parse configuration
     if args_cli.env_cfg_file:
@@ -263,10 +337,8 @@ def main():
         if not resume_path:
             print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
             return
-    elif args_cli.checkpoint:
-        resume_path = retrieve_file_path(args_cli.checkpoint)
     else:
-        resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+        resume_path = resolve_play_checkpoint(args_cli.checkpoint, log_root_path, agent_cfg)
 
     log_dir = os.path.dirname(resume_path)
 
@@ -288,6 +360,10 @@ def main():
         print("[INFO] Recording videos during training.")
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
+        # 命令项可视化箭头 (绿=目标速度/蓝=当前速度) 画在每台狗基座上方 0.5 m, 跟拍机离狗
+        # 只有 ~0.6 m, 箭头会糊满画面 —— 录像时整体隐藏 (纯可视化, 不影响任何训练量)
+        _groups = set_command_markers_visible(env, False)
+        print(f"[INFO] command debug markers hidden for the recording ({_groups} groups)")
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)

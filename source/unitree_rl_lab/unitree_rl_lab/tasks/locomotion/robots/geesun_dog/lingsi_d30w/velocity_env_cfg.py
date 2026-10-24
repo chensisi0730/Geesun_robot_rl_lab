@@ -55,6 +55,22 @@ FOOT_BODY_NAMES = ".*_wheel"
 LEG_JOINT_NAMES = ["joint_(fr|fl|hr|hl)_(hip|thigh|calf)"]
 WHEEL_JOINT_NAMES = ["joint_(fr|fl|hr|hl)_wheel"]
 
+# 2026-10-22 A/B switch for the wheel-lock experiment (see ActionsCfg.WheelVelocityAction and
+# RewardsCfg.joint_pos): GEESUN_D30W_WHEEL_LOCK=1 (default) locks the wheels (scale=0) so the
+# 12 leg joints must climb the stairs; =0 restores free rolling (scale=20) as the control arm.
+# Record the value in the run name - it is NOT stored in the checkpoint.
+WHEEL_LOCKED = os.environ.get("GEESUN_D30W_WHEEL_LOCK", "1") == "1"
+
+# 2026-10-22 P0-2: the joint_pos stand-still penalty is now an INDEPENDENT switch. Coupling it
+# to WHEEL_LOCKED confounded the ablation - the locked arm carried -0.7 while the control arm
+# carried 0.0, so the comparison measured "lock + penalty" vs "free + no penalty" instead of the
+# lock alone (measured 2026-10-21/22: locked wheels + this penalty let the policy stand still
+# for reward - success_rate 0.87 -> 0.01, terrain_levels 6.0 -> 0.005). The default reproduces
+# the previous coupled behaviour (reproducibility of existing runs); override to isolate:
+#   GEESUN_D30W_JOINT_POS=0    drop the penalty entirely (both arms)
+#   GEESUN_D30W_JOINT_POS=0.7  give the free-wheel control arm the same penalty as the locked arm
+JOINT_POS_WEIGHT = float(os.environ.get("GEESUN_D30W_JOINT_POS", "-0.7" if WHEEL_LOCKED else "0.0"))
+
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
     border_width=20.0,
@@ -66,24 +82,13 @@ COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     difficulty_range=(0.0, 1.0),
     use_cache=False,
     sub_terrains={
-        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.1),
-        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-            proportion=0.2, noise_range=(0.01, 0.03), noise_step=0.01, border_width=0.25
-        ),
-        # DEMO STAGE (2026-10-14): pyramid_stairs (金字塔楼梯) re-enabled together with the
-        # height_scanner (高度扫描传感器) for the stairs demo. step_height_range is now the
-        # GO2 value (0.05, 0.23) VERBATIM - strict ablation (消融对照): same terrain, same PPO
-        # hyper-parameters, only the body differs (wheel-legged D30W vs legged GO2).
-        # NOTE the expected ablation outcome: the D30W wheel radius is 0.095 m
-        # (assets/robots/unitree.py, GEESUN_DOG_VARIANT_SPECS["lingsi_d30w"]), so the 0.23 m
-        # top riser is 1.21x the 0.19 m wheel diameter and must be cleared by the 12 leg joints
-        # alone -> pyramid_stairs_success_rate is expected to stay well below GO2's, with
-        # terrain_levels pinned at low rows and bad_orientation (摔倒终止) higher.
-        # With max_init_terrain_level=1 the first real riser is ~0.07 m. Proportions are
-        # auto-normalized by IsaacLab -> flat 20% / random_rough 40% / pyramid_stairs 40%.
-        # Fresh (non-resume) training: critic obs dim changes as well.
+        # 2026-10-23 stairs-only (全楼梯地形): flat/random_rough removed so 100% of columns are
+        # pyramid_stairs (金字塔楼梯). Proportions are auto-normalized by IsaacLab.
+        # step_height_range is the GO2 value (0.05, 0.23) VERBATIM - strict ablation (消融对照).
+        # D30W wheel radius 0.095 m -> top riser 0.23 m is 1.21x the 0.19 m wheel diameter and
+        # must be cleared by the 12 leg joints alone.
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.2,
+            proportion=1.0,
             step_height_range=(0.05, 0.23),
             step_width=0.3,
             platform_width=3.0,
@@ -260,7 +265,11 @@ class CommandsCfg:
         rel_standing_envs=0.1,
         debug_vis=True,
         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-1, 1)
+            # 2026-10-23 P0-3: was (-0.1, 0.1) - with such a small command, standing still
+            # already collected 1.433/1.5 of the tracking reward (std 0.5), so the policy
+            # never had to move. The command range is now wide enough that "moving" and
+            # "standing" are clearly different in reward space.
+            lin_vel_x=(-0.3, 0.3), lin_vel_y=(-0.2, 0.2), ang_vel_z=(-1, 1)
         ),
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
             lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.4, 0.4), ang_vel_z=(-1.0, 1.0)
@@ -286,8 +295,13 @@ class ActionsCfg:
     WheelVelocityAction = mdp.JointVelocityActionCfg(
         asset_name="robot",
         joint_names=WHEEL_JOINT_NAMES,
-        # 0.25 rad/s per unit action would crawl; 20 rad/s per unit covers the 25 rad/s URDF limit
-        scale=20.0,
+        # 2026-10-21 A-cut + wheel lock: scale=0 pins wheel velocity at the default (0),
+        # so the wheels act as feet and stairs must be climbed with the 12 leg joints.
+        # Action dim stays 4 so old checkpoints still load. Rollback: scale=20.0.
+        # 2026-10-22: switchable via GEESUN_D30W_WHEEL_LOCK=0 for the A/B control arm
+        # (measured 2026-10-21/22: locked wheels + the joint_pos penalty below let the policy
+        # stand still for reward - success_rate 0.87 -> 0.01, terrain_levels 6.0 -> 0.005).
+        scale=0.0 if WHEEL_LOCKED else 20.0,
         use_default_offset=True,
         clip={".*": (-25.0, 25.0)},
     )
@@ -378,7 +392,11 @@ class RewardsCfg:
 
     # -- task
     track_lin_vel_xy = RewTerm(
-        func=mdp.track_lin_vel_xy_exp, weight=1.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
+        # 2026-10-23 P0-3: std was sqrt(0.25)=0.5 - far too flat for the command range:
+        # a 0.18 m/s tracking error still scored 0.95 of the maximum. std=0.2 makes
+        # exp(-e^2/0.04) decay properly, so standing still with a 0.3 m/s command now
+        # scores ~0.1 instead of ~0.7.
+        func=mdp.track_lin_vel_xy_exp, weight=1.5, params={"command_name": "base_velocity", "std": 0.2}
     )
     track_ang_vel_z = RewTerm(
         func=mdp.track_ang_vel_z_exp, weight=0.75, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
@@ -417,7 +435,12 @@ class RewardsCfg:
 
     joint_pos = RewTerm(
         func=mdp.joint_position_penalty,
-        weight=-0.7,
+        # 2026-10-22 P0-1: with the wheels locked (scale=0 above) this penalty fights the only
+        # remaining forward drive - lifting the leg joints to step - so standing still became
+        # reward-optimal (success_rate 0.87 -> 0.01, terrain_levels 6.0 -> 0.005). The weight is
+        # now an INDEPENDENT switch (GEESUN_D30W_JOINT_POS, default = the old coupled value) so
+        # the ablation can run "lock + penalty" vs "lock only" instead of confounding both.
+        weight=JOINT_POS_WEIGHT,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES),
             "stand_still_scale": 5.0,
@@ -455,6 +478,32 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_BODY_NAMES),
         },
     )
+    # P1 2026-10-21: swing-wheel clearance (stairs 0.23 m riser, wheel r=0.095 m).
+    # Air-gated foot_clearance so flat rolling does not collect free reward.
+    # target_height is wheel-center world z while swinging (ground roll ≈ 0.095).
+    # Rollback: delete this term (or switch func to mdp.foot_clearance_reward).
+    feet_clearance = RewTerm(
+        func=mdp.foot_clearance_air,
+        weight=1.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_BODY_NAMES),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_BODY_NAMES),
+            "std": 0.05,
+            "tanh_mult": 2.0,
+            "target_height": 0.30,
+            # 2026-10-23 P0-3: command gate - the air gate alone still paid +0.594 per
+            # episode for lifting the legs IN PLACE while making no forward progress.
+            # Only envs that are actually commanded to move (|cmd_xy| >= 0.2 m/s) collect
+            # the lift reward now, so the term pays for stepping, not for twitching.
+            # 2026-10-23 P0-3 fix: was 0.2. With x_max stuck at 0.30 (P0-1 deadlock) and
+            # resampling ~10% standing envs, most episodes had |cmd| < 0.2 so the reward
+            # collapsed from +0.123 (mixed terrain) to +0.006 (stairs-only). Lowering to
+            # 0.1 lets the lift reward fire at a 0.3 m/s x command (the current x_max)
+            # while still filtering pure stand-still envs. Pairs with P0-1 (x_max unlock).
+            "command_name": "base_velocity",
+            "min_command_speed": 0.1,
+        },
+    )
     # feet_contact_forces = RewTerm(
     #     func=mdp.contact_forces,
     #     weight=-0.02,
@@ -486,7 +535,12 @@ class TerminationsCfg:
         func=mdp.illegal_contact,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base_link"), "threshold": 1.0},
     )
-    bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": 0.8})
+    # 2026-10-23 P0-2: was 0.8 (~46 deg). On stairs-only the bad_orientation termination
+    # hit 17% (vs 4.8% on mixed terrain) - the 12 leg joints under wheel lock cannot hold
+    # the trunk level on stair edges, so episodes die before the policy learns to climb.
+    # 1.0 (~57 deg) lets the policy explore tilted postures during stair ascent without
+    # terminating, matching the GO2 stairs default. Rollback: 0.8.
+    bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": 1.0})
 
 
 @configclass
@@ -514,8 +568,28 @@ class CurriculumCfg:
             # stairs training by ~1 h (x_max climbs one 0.05 step per ~29 min). 0.2 keeps a
             # soft floor (== the demonstrated +-0.2 m/s competence) and restores the verified
             # GO2/dog1 dual-curriculum behavior (those campaigns run this param at 0.0).
-            "min_x_max_for_move_up": 0.2,
+            # 2026-10-23 P0-3: 0.2 -> 0.1. The terrain could only level up once the command
+            # range reached 0.2 m/s, but the command range itself needed success >= 0.90, so
+            # the two deadlocked each other (terrain_levels frozen at 0.5054 for 20k iterations,
+            # x_max frozen at 0.10). 0.1 matches the new initial command range.
+            "min_x_max_for_move_up": 0.1,
             "cmd_freeze_windows": 2,
+            # 2026-10-22 P0-2: forward_ok threshold (episode progress along cmd x must reach
+            # this fraction of mean |cmd_x|). 0.7 deadlocked the curriculum; training 0.5.
+            "forward_ok_ratio": 0.5,
+            # 2026-10-22 P0-1: demote-on-no-progress stays OFF - with the wheel lock below
+            # plus the joint_pos penalty the policy can stand still for reward, and demoting
+            # crushed terrain_levels 5.0 -> 0.005 in one day (measured 2026-10-21/22).
+            "demote_no_forward": False,
+            # 2026-10-24 P1 (resume 续训): 地形降级冷静期 (demotion warm-up). A resumed run
+            # re-creates every env in lockstep, so for the first ~1 episode length (1000 steps
+            # = 42 iterations) no episode ends by timeout - only the FALLEN envs reach the
+            # curriculum term. Demoting on that all-failures sample snowballed (measured while
+            # resuming model_3700 on 2026-10-24 00:40): terrain_levels 6.12 -> 1.91 and reward
+            # 24.5 -> -5.7 within 16 iterations. 2.0 = suppress move_down for the first two
+            # episode lengths (~4 min of training). Ablation-safe: the parameter defaults to
+            # 0.0 so GO2 / dog1 are untouched; rollback = delete this line.
+            "demote_warmup_windows": 2.0,
             # terrain-levels sidecar (2026-10-14, scheme A): resume restores the per-env levels
             # instead of re-climbing from max_init_terrain_level; train.py removes it on fresh.
             "state_file": "logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x/terrain_levels_state.json",
@@ -534,13 +608,41 @@ class CurriculumCfg:
             "yaw_increment": 0.1,
             "success_xy": 0.25,
             "success_yaw": 0.35,
-            "min_success_rate": 0.90,
+            # 2026-10-23 P0-3: was 0.90. With the old +-0.1 m/s command the policy could
+            # "succeed" by standing still (tracking error ~0), so the gate opened on
+            # stand-still envs while forward_ok stayed false -> the command range never
+            # widened (x_max stuck at 0.10 for 20k iterations). 0.75 pairs with the tighter
+            # tracking reward (std 0.2) and the wider command range.
+            # 2026-10-23 P0-1: was 0.75 / hold 2. On stairs the success_rate hovered at
+            # 0.765 - just above 0.75 - but streak could never reach 2 consecutive windows,
+            # so x_max froze at 0.30 for 3456 iterations (curriculum deadlock). Lowering to
+            # 0.65 + hold 1 lets x_max climb one 0.05 step per eval window once success is
+            # merely above-average, breaking the deadlock while still gating on real success.
+            "min_success_rate": 0.65,
             "min_env_steps": 6000,
             "min_episodes": 4000,
-            "hold": 2,
+            "hold": 1,
+            # 2026-10-22 P0-2: forward_ok threshold for the x gate (see curriculums.py).
+            "forward_ok_ratio": 0.5,
         },
     )
     command_ranges = CurrTerm(func=mdp.velocity_command_ranges)
+
+
+# 2026-10-20: the four Airy ablation arms share ONE experiment dir (rsl_rl_ppo_cfg.py:
+# experiment_name = unitree_geesun_lingsi_d30w_ht_stairs_10x) and therefore shared ONE pair of
+# curriculum sidecars (课程旁路状态文件). Consequence, measured: resuming the 4096-env B arm with
+# 3096 envs reset pyramid_stairs_level (金字塔楼梯难度等级) 5.05 -> 0.49 and x_max 0.3 -> 0.1, and
+# the 20096-env A arm then overwrote the same file. Each arm now gets its own files; the A
+# baseline keeps the original names, so its runs and checkpoints are untouched (ablation-safe).
+_SIDECAR_DIR = "logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x"
+
+
+def _isolate_curriculum_sidecars(cfg, arm: str) -> None:
+    """Point one ablation arm's curriculum sidecars at arm-specific files (A keeps the defaults)."""
+    cfg.curriculum.terrain_levels.params["state_file"] = f"{_SIDECAR_DIR}/terrain_levels_state_{arm}.json"
+    cfg.curriculum.lin_vel_cmd_levels.params["state_file"] = f"{_SIDECAR_DIR}/curriculum_state_{arm}.json"
+
 
 
 @configclass
@@ -740,6 +842,7 @@ class RobotEnvCfgAiryReplace(RobotEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.experiment_name = "unitree_geesun_lingsi_d30w_ht_stairs_10x_airy_replace"
+        _isolate_curriculum_sidecars(self, "airy_B")
 
 
 @configclass
@@ -752,6 +855,7 @@ class RobotEnvCfgAiryStacked(RobotEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.experiment_name = "unitree_geesun_lingsi_d30w_ht_stairs_10x_airy_stacked"
+        _isolate_curriculum_sidecars(self, "airy_C")
 
 
 @configclass
@@ -763,6 +867,7 @@ class RobotEnvCfgProprioOnly(RobotEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.experiment_name = "unitree_geesun_lingsi_d30w_ht_stairs_10x_proprio_only"
+        _isolate_curriculum_sidecars(self, "airy_D")
 
 
 @configclass

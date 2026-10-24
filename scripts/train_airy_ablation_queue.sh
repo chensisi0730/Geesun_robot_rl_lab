@@ -48,14 +48,18 @@
 
 set -u
 PY=/home/css/miniconda3/envs/env_isaaclab_sim51/bin/python
+# B/C 组（带 Airy 激光雷达）在 4096 envs 下峰值显存 ~31.1 GiB / 32.6 GiB，PyTorch 缓存分配器的
+# 碎片（实测 1.6 GiB reserved-but-unallocated）会让 ray_caster.py:287 的 quat_w.repeat 分配失败。
+# expandable_segments（可扩展显存段）消除该碎片，实测 B 组 4096 envs 从 OOM 变为跑通。
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd /home/css/work/unitree/rl/Geesun_robot_rl_lab
 QLOG=outputs/train_airy_queue.log
 
 # ---- 每臂默认迭代数（iteration，改这 4 行，四组互不影响）----
-ITER_A=5000    # A 基线      Unitree-GeesunDog-LingsiD30W-Velocity（height_scanner 高度扫描器 187 维）
-ITER_D=1000    # D 纯本体    ...-Velocity-ProprioOnly（无任何外部感知）
-ITER_B=4000    # B Airy替代  ...-Velocity-AiryReplace（Airy BEV 720 替换 height_scanner）
-ITER_C=2000    # C Airy堆叠  ...-Velocity-AiryStacked（height_scanner 187 + Airy BEV 720）
+ITER_A=500    # A 基线      Unitree-GeesunDog-LingsiD30W-Velocity（height_scanner 高度扫描器 187 维）
+ITER_D=5000    # D 纯本体    ...-Velocity-ProprioOnly（无任何外部感知）
+ITER_B=10000    # B Airy替代  ...-Velocity-AiryReplace（Airy BEV 720 替换 height_scanner）
+ITER_C=10000    # C Airy堆叠  ...-Velocity-AiryStacked（height_scanner 187 + Airy BEV 720）
 
 # ---- 全局覆盖（可选）：命令行第 1 参数优先于 MAX_ITER 环境变量；都不给则用各臂默认 ----
 OVERRIDE="${1:-${MAX_ITER:-}}"
@@ -76,14 +80,22 @@ run () {  # $1 = task id, $2 = run name, $3 = num_envs, $4 = 该臂默认迭代�
     echo "[queue] $(date '+%F %T') === $2 exit code $? ===" >> "$QLOG"
 }
 
-run "Unitree-GeesunDog-LingsiD30W-Velocity"             airy_A_baseline 20096 "$ITER_A"
-run "Unitree-GeesunDog-LingsiD30W-Velocity-ProprioOnly" airy_D_proprio  20096 "$ITER_D"
+# run "Unitree-GeesunDog-LingsiD30W-Velocity"             airy_A_baseline 20096 "$ITER_A"
+# run "Unitree-GeesunDog-LingsiD30W-Velocity-ProprioOnly" airy_D_proprio  20096 "$ITER_D"
 run "Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace" airy_B_replace   4096  "$ITER_B"
 run "Unitree-GeesunDog-LingsiD30W-Velocity-AiryStacked" airy_C_stacked   4096  "$ITER_C"
 
 # 每个 FRESH 训练会删掉共享 experiment 目录下的两个课程 sidecar；这里还原原始值，
 # 保证改配置前的旧 run 仍能 --resume。数值来自首次被删除前从其自身日志读回。
+# 2026-10-20: B/C/D 三臂现在各用自己的 sidecar（terrain_levels_state_airy_B.json 等，
+# velocity_env_cfg.py::_isolate_curriculum_sidecars），fresh 训练会删掉它们 → 一并还原，
+# 否则 pyramid_stairs_level（金字塔楼梯难度等级）与 x_max 会在下一次 fresh 后再次归零。
 EXP=logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x
 cp outputs/curriculum_sidecar_backup/curriculum_state.json     "$EXP/" 2>/dev/null
 cp outputs/curriculum_sidecar_backup/terrain_levels_state.json "$EXP/" 2>/dev/null
+for arm in airy_B airy_C airy_D; do
+  cp "outputs/curriculum_sidecar_backup/terrain_levels_state_${arm}.json" "$EXP/" 2>/dev/null
+  cp "outputs/curriculum_sidecar_backup/curriculum_state_${arm}.json"     "$EXP/" 2>/dev/null
+done
 echo "[queue] $(date '+%F %T') all arms done; original sidecars restored" >> "$QLOG"
+

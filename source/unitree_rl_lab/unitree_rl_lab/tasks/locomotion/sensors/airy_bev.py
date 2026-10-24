@@ -38,6 +38,12 @@ AIRY_BEV_MIN_DIST: float = 0.2
 _AIRY_BEV_NEAR_DIST: float = 2.0
 _AIRY_BEV_NEAR_BINS: int = 8
 
+AIRY_BEV_CHUNK_RAYS: int = 8192
+"""Rays processed per chunk inside :func:`airy_bev_grid`. Peak extra VRAM scales with this, NOT
+with the full ray count: at 4096 envs x 43,200 rays a chunk of 8192 keeps the per-chunk
+intermediates at ~2.7 GB, whereas the un-chunked form needed ~13 GB on top of the 26.8 GB LiDAR
+baseline and OOM'd the 32 GB card. Raise it for speed on a bigger GPU; 1 = fully serial."""
+
 
 def distance_edges(n_dist: int = AIRY_BEV_DIST_BINS,
                    min_dist: float = AIRY_BEV_MIN_DIST,
@@ -64,7 +70,8 @@ def airy_bev_grid(ray_hits_w: torch.Tensor,
                   max_dist: float = AIRY_BEV_MAX_DIST,
                   min_dist: float = AIRY_BEV_MIN_DIST,
                   ground_z: float = 0.0,
-                  fill_value: float = 0.0) -> torch.Tensor:
+                  fill_value: float = 0.0,
+                  chunk_rays: int = AIRY_BEV_CHUNK_RAYS) -> torch.Tensor:
     """Collapse a LiDAR point cloud into a polar max-height BEV grid.
 
     Args:
@@ -87,47 +94,54 @@ def airy_bev_grid(ray_hits_w: torch.Tensor,
     """
     if ray_hits_w.dim() != 3 or ray_hits_w.shape[-1] != 3:
         raise ValueError(f"ray_hits_w must be (N, B, 3), got {tuple(ray_hits_w.shape)}")
-    n = ray_hits_w.shape[0]
+    n, b = int(ray_hits_w.shape[0]), int(ray_hits_w.shape[1])
+    n_cells = n_az * n_dist
     pos = sensor_pos.reshape(n, 1, 3)
-    p = ray_hits_w - pos  # translate into sensor frame
-    if sensor_quat is not None:
-        # rotate world->sensor: p_b = quat_apply(q_conj, p_w - pos). Isaac Lab quats are
-        # (w, x, y, z); the conjugate keeps w and flips (x, y, z). Hamilton rotation of a pure
-        # vector: v' = v + 2*w*cross(qxyz, v) + 2*cross(qxyz, cross(qxyz, v)).
-        q = sensor_quat.reshape(n, 1, 4)
-        w = q[..., 0:1]
-        qxyz = -q[..., 1:4]  # conjugate's vector part
-        t1 = torch.cross(qxyz, p)
-        t2 = torch.cross(qxyz, t1)
-        p = p + 2.0 * (w * t1 + t2)
-
-    x_c, y_c, z_c = p[..., 0], p[..., 1], p[..., 2]
-    az = torch.atan2(y_c, x_c)                       # (N, B) in [-pi, pi]
-    r = torch.sqrt(x_c**2 + y_c**2)                 # (N, B)
-    # Height is taken from the WORLD frame (ground at world z = ``ground_z``), NOT from the
-    # body frame: a body-frame z would inherit the sensor's mounting height and pitch, which is
-    # exactly what the policy must NOT see (it wants absolute obstacle height above the ground).
-    # Azimuth/range, by contrast, are body-relative so the grid tracks the robot's heading.
-    h = ray_hits_w[..., 2] - ground_z              # height above ground (N, B)
-
-    finite = torch.isfinite(ray_hits_w).all(dim=-1)  # (N, B)
-
-    az_bin = (((az + torch.pi) / (2.0 * torch.pi) * n_az).long()).clamp(0, n_az - 1)
+    grid = torch.full((n, n_cells), fill_value, dtype=ray_hits_w.dtype, device=ray_hits_w.device)
+    grid_flat = grid.view(-1)
+    # Per-env cell offset: ONE vectorised scatter_reduce_ per chunk writes every env's row,
+    # replacing the old per-env Python loop (4096 kernel launches per step at 4096 envs).
+    env_off = (torch.arange(n, device=ray_hits_w.device) * n_cells).unsqueeze(1)  # (N, 1)
     edges = distance_edges(n_dist, min_dist, max_dist).to(ray_hits_w.device)
-    edge_inner = edges[:-1].reshape(1, 1, -1)
-    r_bin = (r.unsqueeze(-1) >= edge_inner).sum(dim=-1).long().clamp(0, n_dist - 1)
-    # points beyond max_dist already excluded by the caster clip, but guard anyway
-    r_bin = torch.where(r > max_dist, torch.tensor(n_dist - 1, device=r.device), r_bin)
-
-    grid = torch.full((n, n_az * n_dist), fill_value,
-                      dtype=ray_hits_w.dtype, device=ray_hits_w.device)
-    flat = (az_bin * n_dist + r_bin)  # (N, B)
-    for i in range(n):
-        f = flat[i][finite[i]]
-        if f.numel() == 0:
-            continue
-        vals = h[i][finite[i]]
-        grid[i].scatter_reduce_(0, f, vals, "amax")
+    # right=True over edges[:-1] is exactly the old (r >= edges[:-1]).sum(-1): the count of ring
+    # inner edges at or below r. searchsorted costs O(B) memory; the broadcast form materialised
+    # (N, B, n_dist) intermediates = 3.3 GiB bools (13.2 GiB as float) at 4096 envs x 43,200 rays
+    # on top of the 26.8 GB LiDAR baseline -> CUDA OOM at 4096 envs.
+    edge_inner = edges[:-1].contiguous()
+    far_bin = torch.tensor(n_dist - 1, device=ray_hits_w.device)
+    chunk = max(1, int(chunk_rays))
+    for s in range(0, b, chunk):
+        e = min(s + chunk, b)
+        hc = ray_hits_w[:, s:e]                                   # (N, c, 3) view, no copy
+        p = hc - pos  # translate into sensor frame
+        if sensor_quat is not None:
+            # rotate world->sensor: p_b = quat_apply(q_conj, p_w - pos). Isaac Lab quats are
+            # (w, x, y, z); the conjugate keeps w and flips (x, y, z). Hamilton rotation of a pure
+            # vector: v' = v + 2*w*cross(qxyz, v) + 2*cross(qxyz, cross(qxyz, v)).
+            q = sensor_quat.reshape(n, 1, 4)
+            w = q[..., 0:1]
+            qxyz = -q[..., 1:4]  # conjugate's vector part
+            t1 = torch.cross(qxyz, p, dim=-1)
+            t2 = torch.cross(qxyz, t1, dim=-1)
+            p = p + 2.0 * (w * t1 + t2)
+        az = torch.atan2(p[..., 1], p[..., 0])                    # (N, c) in [-pi, pi]
+        r = torch.sqrt(p[..., 0] ** 2 + p[..., 1] ** 2)          # (N, c)
+        # Height is taken from the WORLD frame (ground at world z = ``ground_z``), NOT from the
+        # body frame: a body-frame z would inherit the sensor's mounting height and pitch, which is
+        # exactly what the policy must NOT see (it wants absolute obstacle height above the ground).
+        # Azimuth/range, by contrast, are body-relative so the grid tracks the robot's heading.
+        h = hc[..., 2] - ground_z                                 # height above ground (N, c)
+        finite = torch.isfinite(hc).all(dim=-1)                   # (N, c)
+        az_bin = (((az + torch.pi) / (2.0 * torch.pi) * n_az).long()).clamp(0, n_az - 1)
+        r_bin = torch.searchsorted(edge_inner, r.contiguous(), right=True).clamp(0, n_dist - 1)
+        # points beyond max_dist already excluded by the caster clip, but guard anyway
+        r_bin = torch.where(r > max_dist, far_bin, r_bin)
+        flat = az_bin * n_dist + r_bin                            # (N, c)
+        # Non-finite rays (missed / inf hits) must not poison the bin max: park them on cell 0
+        # carrying the fill value, i.e. the value an empty bin already holds -> amax is a no-op.
+        flat = torch.where(finite, flat, torch.zeros_like(flat))
+        h = torch.where(finite, h, torch.full_like(h, fill_value))
+        grid_flat.scatter_reduce_(0, (flat + env_off).reshape(-1), h.reshape(-1), "amax")
     return grid.reshape(n, n_az, n_dist)
 
 
@@ -143,6 +157,7 @@ __all__ = [
     "AIRY_BEV_DIST_BINS",
     "AIRY_BEV_MAX_DIST",
     "AIRY_BEV_MIN_DIST",
+    "AIRY_BEV_CHUNK_RAYS",
     "distance_edges",
     "airy_bev_grid",
     "airy_bev_flat",

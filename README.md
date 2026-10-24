@@ -327,14 +327,16 @@ MON_PID=$(pgrep -f 'monitor_tb_check_d30w_ht10x[.]sh')
 > SIGTERM→SIGKILL 杀掉手工 run，并按它自己的 `MON_EXTRA_TRAIN_ARGS` 重启（录像参数与手工命令不一致）。
 > 停止 / 重启方法见下文「10× 网络规模消融」小节第 **2b** 步。
 
-**sidecar（旁路状态文件）规则**（`scripts/rsl_rl/train.py:447-459`）：`--resume`（续训）时
+**sidecar（旁路状态文件）规则**（`scripts/rsl_rl/train.py:470-489`）：`--resume`（续训）时
 `terrain_levels_state.json`（地形等级）与 `curriculum_state.json`（速度命令范围）**被保留并加载**，
-只有 fresh（重训）才删除它们。二者按 `experiment_name` 目录共享，**不属于某个 run**：
+只有 fresh（重训）才删除它们（删除前先复制 `*.last` 兜底）。默认按 `experiment_name` 目录共享、
+**不属于某个 run**；文件名来自各课程项的 `state_file` 参数（2026-10-20 起 B/C/D 三臂各用自己的
+一份，见下文「sidecar 新格式」）：
 
 | 情形 | 后果 |
 |---|---|
 | 从**旧 run** 续训（例：`--load_run 2026-10-14_23-26-00`，其最新 checkpoint 只到 `model_7900.pt`） | 旧策略被直接灌入最新战役的 sidecar（实测 `terrain_levels` 均值 6.006、`x_max` ±0.5、`step` 178000）→ 大面积摔倒 → 等级雪崩，并把雪崩结果**写回同一个 json**，反向污染最新战役状态（2026-10-12 崩溃模式的复现路径） |
-| 改 `--num_envs`（并行环境数）后续训 | `curriculums.py:48-49` 校验 `num_envs` / `max_level` 不匹配 → `[WARN] ... keeping the random initial levels`，等级从 `max_init_terrain_level` 重爬 |
+| 改 `--num_envs`（并行环境数）后续训 | **2026-10-20 修复后**：`layout`（地形网格指纹）相同 → 走 **by type** 路径，每个 env 从自己地形类型的等级池重采样，`terrain_levels` / `pyramid_stairs_level`（金字塔楼梯难度等级）**不降级**；只有 `layout` 变了 / 文件缺 `levels_by_type`（2026-10-20 前的老文件）才 `[WARN] ... keeping the random initial levels` 从 `max_init_terrain_level` 重爬（修复前：改 `--num_envs` 必降级，实测 5.05→0.49，见下节） |
 
 跨 run / 回退消融前，必须先备份并移走两个 sidecar：
 
@@ -342,8 +344,55 @@ MON_PID=$(pgrep -f 'monitor_tb_check_d30w_ht10x[.]sh')
 cd logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x
 mv curriculum_state.json     curriculum_state.json.bak_<ITER>
 mv terrain_levels_state.json terrain_levels_state.json.bak_<ITER>
-# 实验结束后按原名逐字移回（课程项按仓库相对路径读取，文件名不可改）
+# B/C/D 臂各用自己的文件名（terrain_levels_state_airy_B.json 等），要移走的是对应臂的那一对
+# 实验结束后按原名逐字移回（课程项按仓库相对路径读取 state_file，改文件名必须同步改 cfg）
 ```
+
+**sidecar 新格式：保存 `pyramid_stairs_level`（金字塔楼梯难度等级）（2026-10-20）**
+
+事故实测：B 臂（`-AiryReplace`）4096 envs 跑完 10000 迭代后，用 `--num_envs 3096` 续训 →
+`Curriculum/terrain_performance_by_type/pyramid_stairs_level` 从 **5.05 掉到 0.49**、
+`Curriculum/lin_vel_cmd_levels/x_max` 从 **0.3 掉到 0.1**。原因两条叠加：
+① 旧 `_load_terrain_state` 要求 `num_envs` 逐字相等，4096→3096 不等 → 随机初始化（均值 =
+`max_init_terrain_level` 的一半 = 0.5）→ 再把这个"归零"结果写回同一个 json；
+② 四臂共用一个实验目录 → 共用同一对 sidecar，A 臂（20096 envs）随后把同一个文件覆盖掉。
+
+修复（改动最小，GO2 / dog1 / A 臂行为逐字不变）：
+
+| 位置 | 改动 |
+|---|---|
+| `mdp/curriculums.py::_save_terrain_state` | sidecar 增写 4 个字段：`by_type`（**逐地形平均等级**，`by_type["pyramid_stairs"]` 就是 TB 上的 `pyramid_stairs_level`）、`levels_by_type`（逐地形等级池）、`types`、`layout`（`num_rows`/`num_cols`/`proportion` 指纹）。旧字段 `levels`/`num_envs`/`max_level`/`step`/`ts` 逐字保留 → 老文件仍可读 |
+| `mdp/curriculums.py::_load_terrain_state` | 两条恢复路径：**exact**（`num_envs` 相同 → 逐环境精确恢复）与 **by type**（`num_envs` 变了但 `layout` 相同 → 每个 env 从**自己地形类型**的等级池重采样，`pyramid_stairs_level` 原样回来、不降级）。`layout` 变了 / 文件损坏 / 老文件缺 `levels_by_type` → `[WARN]` + 随机初始化，绝不中断训练 |
+| `scripts/rsl_rl/train.py` | fresh（重训）删 sidecar 前先复制 `*.last` 兜底；按**当前 cfg 的 `state_file`** 定位（不再硬编码文件名）；启动时打印 `[INFO] <term> sidecar (旁路状态文件): <绝对路径>` |
+| `lingsi_d30w/velocity_env_cfg.py::_isolate_curriculum_sidecars` | B/C/D 三臂各用**自己的** sidecar：`terrain_levels_state_airy_B.json` / `curriculum_state_airy_B.json`（C/D 同理）；**A 臂保持原名** → 已训 run 与 checkpoint 不受影响（消融安全） |
+
+自检与重建（都不启动 Isaac Sim，秒级）：
+
+```bash
+PY=/home/css/miniconda3/envs/env_isaaclab_sim51/bin/python
+# 1) sidecar 读写自检：同 env 数精确恢复 / 跨 env 数按类型恢复(楼梯等级不降) /
+#    老格式兼容 / layout 变化退回随机 / 损坏文件不抛异常  —— 期望 RESULT: ALL PASS，exit 0
+$PY scripts/diagnose/check_terrain_state_sidecar.py
+
+# 2) 从 TB 曲线重建丢失的 sidecar（读 Curriculum/terrain_performance_by_type/*_level 与
+#    Curriculum/command_ranges/*，写 terrain_levels_state_<arm>.json + curriculum_state_<arm>.json，
+#    写前自动备份 *.pre_rebuild_<时间戳>，写完自动验证 3096 与 4096 envs 都能恢复）
+$PY scripts/diagnose/rebuild_terrain_state_from_tb.py \
+    --tb_run logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x/2026-10-20_01-03-41_airy_B_replace \
+    --arm airy_B --num_envs 3096 --step 240000
+# 实测输出：by_type {'flat': 6.05, 'random_rough': 6.04, 'pyramid_stairs': 4.94}
+#          command ranges x ±0.30 / y ±0.10 / z ±1.0，restore check 全 PASS
+# ⚠ 语义：重建的是"逐地形等级分布"（均值与 TB 一致），不是原始 env→等级配对。
+#   用它恢复丢失的 sidecar，不要拿它做审计。--dry_run 可先看不落盘。
+```
+
+> **续训时怎么确认等级真的接上了**：启动日志必须出现
+> `[INFO] Restored terrain levels (exact|by type, ...) ... | flat=... pyramid_stairs=5.05 ...`；
+> 只看到 `[WARN] ... keeping the random initial levels` = 等级没接上（`layout` 变了、
+> 文件缺失或 `max_level` 不一致），此时**不要**开跑，先跑上面的重建脚本。
+> 训练中途每 `state_save_interval`（默认 1000 全局步）写一次 sidecar，所以
+> `ls -l logs/rsl_rl/<exp>/terrain_levels_state*.json` 的 mtime 在推进 = 正在保存。
+
 
 
 
@@ -487,6 +536,37 @@ for t in 0 2.5 5 7.5 9.9; do ffmpeg -v error -ss $t -i $V -frames:v 1 -y /tmp/fr
 | `--no_curriculum` | 关闭 | 关闭课程项（curriculum terms），地形难度在回放中保持不变（录像推荐，且不会污染 `curriculum_state.json`）。 |
 | `--episode_length_s` | 无（用 cfg 的 20 s） | 覆盖 episode 长度（`env_cfg.episode_length_s`，默认 20 s = 1000 步）。录 30 s（1500 帧）时设 `35`，整段不会出现锁步复位（lockstep reset，机器狗同时回到出生点）。不带该参数 = 行为与旧版逐字一致。 |
 
+> **站立不动刷分目视检查（stand-still reward-hacking visual check）一键脚本：**
+> `bash scripts/tests/standstill_play_check.sh` 封装了上述参数（恒定 `--cmd_x 0.5 0.5` + `--no_standing`
+> + `--no_curriculum` + 自动选取最新 checkpoint 与 cfg 快照），按 `TERRAIN`（默认 `flat stairs`）逐地形
+> 录像并抽帧到 `outputs/sst_<terrain>_f40.png` / `_f300.png`。判读：机身沿 +x 前进（景物后退）= 通过；
+> 原地踏步 / 腿部抽动 / 蹲伏不动 = 刷分复发。定量判据见 `scripts/tests/validate_wheel_lock_flat.sh`
+> （`mean_fwd_along_cmd_ms > 0.10` 等）。前置条件同下文「前置检查」：GPU 空闲才能跑，训练中会自动 ABORT。
+
+> **`--checkpoint`（检查点路径）必须是完整路径 —— 这是 play（回放）最常见的崩溃原因。**
+> `play.py` 把它交给 Isaac Lab 的 `retrieve_file_path`（文件定位工具），该函数只认「本地已存在的路径」
+> 或 Nucleus URL，找不到就抛 `FileNotFoundError: Unable to find the file: /model_10400.pt`。
+> **路径以 `/` 开头 = shell 变量为空**：粘贴本 README 的命令块时只贴了 `python ...` 那几行、漏掉了上面的
+> `EXP=...` / `RUN=...` 赋值，`--checkpoint=$RUN/model_10400.pt` 就展开成 `/model_10400.pt`（2026-10-20 实测）。
+> 2026-10-20 起 `play.py:resolve_play_checkpoint()` 会拦住它：打印解析结果 + 空变量提示 + 每个 run 的最新
+> checkpoint 候选清单，然后干净 `exit(1)`（不再抛 traceback）；并支持**只给文件名**
+> `--checkpoint model_10400.pt`，自动在 `<experiment_dir>/*/model_10400.pt` 里取最新 run。
+>
+> ```bash
+> # 0) 回放前先确认 checkpoint 真的存在（秒级，不启动仿真器）
+> EXP=logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x
+> ls -dt $EXP/*/ | head -4                      # 最新 run 目录
+> ls -t  $EXP/<run_id>/model_*.pt | head -3     # 该 run 的最新 checkpoint
+> # 1) 从仓库根目录运行（相对路径按 CWD 解析），并粘贴整块命令（含 EXP= 赋值行）
+> cd /home/css/work/unitree/rl/Geesun_robot_rl_lab
+> $PY scripts/rsl_rl/play.py --headless --task Unitree-GeesunDog-LingsiD30W-Velocity \
+>     --checkpoint $EXP/<run_id>/model_10400.pt
+> # 2) 也可只给文件名（新逻辑自动定位到最新 run 的同名 checkpoint）
+> $PY scripts/rsl_rl/play.py --headless --task Unitree-GeesunDog-LingsiD30W-Velocity \
+>     --checkpoint model_10400.pt
+> ```
+
+
 ```bash
 # 自动选择最新 checkpoint
 conda run -n env_isaaclab_sim51 python scripts/rsl_rl/play.py \
@@ -618,6 +698,125 @@ python scripts/rsl_rl/play.py $COMMON --video_tag stairs_15300_30s --terrain sta
 >
 > 已知瑕疵：每段首帧是 RTX（实时光追）预热帧；`conda run` 的 stdout 缓冲会截断日志尾部 INFO 行，以 `ffprobe` 为准。
 
+#### Airy 消融四臂（A/B/C/D）的 PLAY（回放）与录像 —— 2026-10-20 实测通过
+
+四臂共用**同一个** experiment 目录 `logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x`
+（目录由 `rsl_rl_ppo_cfg.py` 的 `experiment_name` 决定，`--run_name` 只决定 run 前缀），
+所以 **play 必须显式 `--checkpoint` 指定臂，且 `--task` 必须与 checkpoint 同臂**，
+否则 policy（策略）/ critic（价值网络）输入维度不匹配 → `size mismatch for critic.0.weight`。
+
+当前进度（2026-10-20 22:22 更新）：**A `2026-10-20_19-03-11_airy_A_baseline`（20096 envs，续训到
+`model_10400.pt`，✓ 已训完可测）**、**B `2026-10-20_01-03-41_airy_B_replace`（4096 envs，10000 迭代跑满，
+`model_9999.pt`）**、D `2026-10-19_22-55-51_airy_D_proprio`（只跑了 1000 迭代，`model_999.pt`，
+**地形课程全程冻结在 0.5054**，见下文「D 臂闸门」）；C（`-AiryStacked`）尚无有效 run。
+旧 run：A `2026-10-19_17-54-03_airy_A_baseline`。
+
+```bash
+# 0) 前置检查（pre-flight check）：GPU 空闲 + 停 6h 守护进程（daemon）——见本节开头
+ps -eo pid,etime,args | grep -E 'monitor_tb_check|train[.]py|play[.]py' | grep -v grep
+nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader   # 期望 ~2 GiB / 32.6 GiB
+
+# 1) 单段录像（已实测通过）：B 臂 + 平地 + 斜后方高俯拍跟拍，5 s 短片
+PY=/home/css/miniconda3/envs/env_isaaclab_sim51/bin/python
+EXP=logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x
+RUN=$EXP/2026-10-20_01-03-41_airy_B_replace
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $PY -u scripts/rsl_rl/play.py --headless \
+    --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace \
+    --checkpoint $RUN/model_9999.pt \
+    --num_envs 4 --no_standing --no_curriculum \
+    --video --video_length 250 --video_tag B_flat --camera_view diag \
+    --terrain flat --cmd_x 0.2 0.3 --cmd_y -0.1 0.1 --cmd_z -0.3 0.3
+# 实测产出：$RUN/videos/B_flat/rl-video-step-0.mp4 = 1280x720 / 50 fps / 249 帧 / 4.98 s / 1.5 MB
+# 日志里必须出现这两行，才证明加载的确实是 B 臂（critic 796 维 = 本体 76 + airy_bev 720）：
+#   [INFO]: Parsing configuration from: ...velocity_env_cfg:RobotPlayEnvCfgAiryReplace
+#   | 8 | airy_bev | (720,) |
+```
+
+**四段录像组（B 臂，30 s/段，段间冷却 45 s）**：把 `--video_tag` / `--terrain` / `--cmd_x` 依次换成
+`stairs_B`/`stairs`/`0.2 0.3`、`rough_B`/`random_rough`/`0.2 0.3`、`flat_B`/`flat`/`0.2 0.3`、
+`complex_B`/`complex`/`0.2 0.3`，其余参数逐字不变（同 checkpoint、同 `--num_envs 4`），
+并把 `--video_length 1500 --episode_length_s 35` 换成 30 s 长版。
+
+**相机机位速查（camera rig，抬高摄像头 / 更换视角）** —— 参数全部来自 `play.py:34-88` 与 `_follow_camera()`（`play.py:359-412`）：
+
+| 参数 | 默认（按视角） | 作用 |
+|---|---|---|
+| `--camera_view` | `side` | `side`（侧向跟拍，不随偏航角转）/ `rear`（身后追拍，随偏航角转）/ `diag`（斜后方高俯拍，随偏航角转）/ `free`（自由视角，机位只设一次） |
+| `--camera_height` | side/rear 1.1，diag 1.2 | **抬高摄像头**：相机高于机身根节点的垂直偏移（米） |
+| `--camera_distance` | side/rear 2.2，diag 0.57 | 水平偏移（米）；与 height 一起决定俯角 = `atan(height/distance)` |
+| `--camera_focal` | side/rear 0（不改），diag 21 | 焦距（毫米）：**越小越广角**；抬高后想看清机器要**调大**（收窄视场角），录完自动恢复 |
+| `--camera_eye` / `--camera_target` | 出生点斜上方 3.5 / 1.6 m | 仅 `free` 用：初始机位与注视点（世界坐标，米） |
+
+抬高后的实测几何（1280×720，Kit 默认传感器宽 20.955 mm）：`focal 18.15 → 视场角 60.0°/36.0°`、`21 → 53.0°/31.4°`、`35 → 33.3°/19.1°`；`diag h=1.2/d=0.57 → 俯角 64.6°、距离 1.33 m`，`h=3.5/d=1.2 → 俯角 71.1°、距离 3.70 m`（机器在垂直视场里从 61% 缩到 22% → 需配 `--camera_focal 35` 把机器拉回画面）。
+
+```bash
+# 抬高摄像头（斜后方高俯拍，3.5 m 高 + 收窄视场角把机器拉大）
+$PY scripts/rsl_rl/play.py --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace \
+    --checkpoint $RUN/model_9999.pt \
+    --camera_view diag --camera_height 3.5 --camera_distance 1.2 --camera_focal 35
+
+# 更换视角：身后追拍 / 侧向跟拍抬高版 / 自由视角（Kit 视口可自由拖动）
+$PY scripts/rsl_rl/play.py --task ...-AiryReplace --checkpoint $RUN/model_9999.pt \
+    --camera_view rear --camera_height 1.6
+$PY scripts/rsl_rl/play.py --task ...-AiryReplace --checkpoint $RUN/model_9999.pt \
+    --camera_view side --camera_height 3.0 --camera_distance 3.0 --camera_focal 35
+$PY scripts/rsl_rl/play.py --task ...-AiryReplace --checkpoint $RUN/model_9999.pt \
+    --camera_view free --camera_eye 6 6 3.0 --camera_target 0 0 0.3
+```
+
+> **⚠ GUI（图形界面，不带 `--headless`）里手动转视角会被覆盖：** `_follow_camera()` 在**每一步**都调用
+> （`play.py:425`，与 `--video` 无关），所以你在 Kit 视口里拖动/旋转的机位会在下一步被搬回机器身上。
+> **想在窗口里自由看，必须 `--camera_view free`**（机位只在首帧设一次，之后完全不动）。
+> 相机参数是启动时解析的 argparse（命令行解析）参数，**没有热键**，改机位必须重启 `play.py`。
+> 跟拍永远跟 **`env_0`** 那台机器狗。
+>
+> **固化对照脚本（2026-10-20）：** `scripts/tests/play_camera_rigs.sh` —— 一次跑完
+> `cam_diag_h12`（基准）/ `cam_diag_h35`（抬高）/ `cam_rear` / `cam_side_h30` / `cam_free` 五种机位，
+> 段间 45 s 冷却 + `timeout 600` 兜底 + `ffprobe` 产出校验 + **centre_std 构图判据**
+> （画面中心 40%×40% 区域亮度标准差，机器狗在画面里时应明显偏高）。
+> 运行：`bash scripts/tests/play_camera_rigs.sh`（脚本会先自检「有 train.py/play.py 在跑就直接退出」）。
+
+
+
+**三个必踩的坑（2026-10-20 实测）**
+
+| 坑 | 现象 | 正确做法 |
+|---|---|---|
+| **`--env_cfg_file`（配置快照回放）对 B/C/D 有害** | `snapshot_cfg.py:53-54` 取 `play_cfgs[0]`，而 run 快照里**只有 `RobotPlayEnvCfg`（A 臂，critic 263 维）的名字以 `PlayEnvCfg` 结尾**（B/C/D 的类名是 `RobotPlayEnvCfgAiryReplace` 等，结尾不是 `PlayEnvCfg`）→ 快照回放实际加载的是 **A 臂配置** → `size mismatch for critic.0.weight` | B/C/D **不要加 `--env_cfg_file`**，直接用 `--task ...-AiryReplace` / `-AiryStacked` / `-ProprioOnly`；只有 A 臂在 task cfg 漂移后才需要 `--env_cfg_file` |
+| **play 默认命令范围 = `limit_ranges` = ±1.0 m/s** | `RobotPlayEnvCfg*.__post_init__` 把 `ranges` 覆盖成 `limit_ranges`；而 B 臂训练时 `x_max` 只爬到 **0.30 m/s 就冻结**（`gated_lin_vel_cmd_levels` 的 `lin_increment=0.05` + `cmd_freeze_windows=2`）→ 用默认命令回放 = 逼策略跑它从未见过的 1.0 m/s，看起来像「策略废了」 | 录像必须显式 `--cmd_x`，且**不超过该臂 TB 上的 `Curriculum/lin_vel_cmd_levels/x_max`**（B 臂 = ±0.3） |
+| **Airy 激光雷达显存** | B/C 的 `airy_front` 是 43200 rays/env，4096 envs 时 ~26.8 GB；play 走 RTX（实时光追）渲染再 +4 GB | play/录像固定 `--num_envs 4`（最多 16），并带 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`（可扩展显存段） |
+
+**B 臂训练结果（TB 末 50 迭代均值，run `2026-10-20_01-03-41_airy_B_replace`，10000 迭代）**
+
+| 指标 | 值 | 判读 |
+|---|---|---|
+| `Train/mean_reward` | 28.56 | 已收敛 |
+| `Train/mean_episode_length` | 931 / 1000 | 接近跑满 |
+| `Metrics/base_velocity/error_vel_xy` / `_yaw` | 0.192 m/s / 0.242 rad/s | 达标（验收线 0.25 / 0.35） |
+| `Episode_Termination/time_out` / `base_contact` | 0.853 / 0.000 | 无机身触地 |
+| `Curriculum/terrain_levels` | 5.59 | 已到中高难度 |
+| `Curriculum/lin_vel_cmd_levels/x_max` | **0.300（全程最大值也是 0.300）** | 速度课程 10000 迭代只爬到 ±0.3 就冻结 → **与 A/D 臂对比必须按同命令范围比** |
+| `pyramid_stairs_success_rate`（楼梯成功率） | **0.641** | **短板**：远低于 flat 0.999 / random_rough 0.994 |
+| `flat` / `random_rough` success_rate | 0.999 / 0.994 | 达标 |
+
+→ 录像重点看楼梯（`--terrain stairs`），定量测试重点也跑楼梯：
+
+```bash
+# 注意：test_walk_torque.py 没有 --cmd_x；它默认把命令钳到 ±0.25 m/s（在 B 臂训练过的 ±0.3 以内），
+# 加 --full_command_range 才会用 ±1.0 m/s（超出 B 臂训练范围，结果不可与 TB 对照）
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $PY -u scripts/rsl_rl/test_walk_torque.py \
+    --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace \
+    --checkpoint $RUN/model_9999.pt \
+    --terrain stairs --num_envs 16 --steps 1000
+for t in flat random_rough stairs complex; do
+  PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $PY -u scripts/rsl_rl/test_walk_torque.py \
+      --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace \
+      --checkpoint $RUN/model_9999.pt --terrain "$t" --num_envs 16 --steps 1000
+done
+```
+
+
+
 ### 2. 定量行走与力矩测试
 
 > 脚本原名 `test_flat_walk.py`，2026-10-14 更名为 **`test_walk_torque.py`**（行走性能 + 逐关节力矩统计），
@@ -721,6 +920,11 @@ grep -c 'Patch buffer overflow' /tmp/train_go2.log
 - [ ] 复杂地形下力矩没有异常峰值
 - [ ] 步态自然，无异常动作
 - [ ] 训练日志无 PhysX Patch buffer overflow（计数为 0）
+- [ ] 课程状态可续训：`Curriculum/terrain_performance_by_type/pyramid_stairs_level`（金字塔楼梯难度等级）已写入 sidecar（旁路状态文件）`terrain_levels_state*.json` 的 `by_type`，且 `--resume`（续训）日志出现 `Restored terrain levels (exact|by type, ...)`（改 `--num_envs` 后也不降级）
+- [ ] 自检通过：`python scripts/diagnose/check_terrain_state_sidecar.py` → `RESULT: ALL PASS`（exit 0）
+- [ ] editable 安装（可编辑安装）确实指向本仓库：`python -c "import unitree_rl_lab; print(unitree_rl_lab.__file__)"` 输出 `<本仓库>/source/unitree_rl_lab/unitree_rl_lab/__init__.py`（`pip show` 的 `Location` 显示 `~/.local/lib/python3.10/site-packages` 属正常，看 `Editable project location` 与 import 结果）
+- [ ] 回放（play）加载的确实是目标臂：日志出现 `[INFO]: Parsing configuration from: ...velocity_env_cfg:RobotPlayEnvCfg<Arm>` 与观测维度表（A 臂 76 维本体 / B 臂 796 = 本体 76 + `airy_bev` 720），且 `--checkpoint` 打印出的绝对路径属于预期 run 目录
+
 
 ## Geesun Dog 导入与全关节运动演示（dog1）
 
@@ -1133,9 +1337,10 @@ episode 结束，对该 env 判定（terrain_levels_vel_strict）：
 只靠双向滞回还不够：地形难度会跑在速度能力前面（err 阈值是绝对值，低速下太宽松）。
 解决方案是两个课程的三重联动：
 
-1. **命令课程先行**：`min_x_max_for_move_up=0.3` —— `x_max` 未到 0.3 m/s 前地形
+1. **命令课程先行**：`min_x_max_for_move_up = 0.2`（`lingsi_d30w/velocity_env_cfg.py:517` 现值；
+   本文旧版写的 0.3 是当时的设计值，**已下调为 0.2**）—— `x_max` 未到 0.2 m/s 前地形
    **双向冻结**（`gate_open` 闸住 move_up 与 move_down，真冻结、零漂移）；
-2. **解冻后爬坡**：`x_max ≥ 0.3` 后地形恢复双向滞回升降；
+2. **解冻后爬坡**：`x_max ≥ 0.2` 后地形恢复双向滞回升降；
 3. **爬坡让路**：`cmd_freeze_windows=2` —— terrain 均值每 +1 级（`cmd_freeze_level_gain`），
    x 指令范围冻结 2 个评估窗口（不升不降、`streak` 清零），让策略在新难度稳定后再扩速度；
    TB 曲线 `Curriculum/lin_vel_cmd_levels/x_frozen` 可见触发（实测触发 588 个采样点、峰值 2）。
@@ -1153,8 +1358,8 @@ episode 结束，对该 env 判定（terrain_levels_vel_strict）：
 
 ```text
 Curriculum/lin_vel_cmd_levels/streak     累计→清零→再攒（评估窗口在工作）
-Curriculum/lin_vel_cmd_levels/x_max      阶梯上升，到 0.3 是 terrain 解冻闸
-Curriculum/terrain_levels                x_max<0.3 时应水平直线（冻结）；解冻后螺旋上爬（升>降）
+Curriculum/lin_vel_cmd_levels/x_max      阶梯上升，到 0.2 是 terrain 解冻闸（cfg 现值）
+Curriculum/terrain_levels                x_max<0.2 时应水平直线（冻结）；解冻后螺旋上爬（升>降）
 Curriculum/lin_vel_cmd_levels/x_frozen   terrain 每 +1 级短暂 =2 再归 0
 ```
 
@@ -1174,7 +1379,7 @@ Curriculum/lin_vel_cmd_levels/x_frozen   terrain 每 +1 级短暂 =2 再归 0
 | 参数 | 原值 | 现值 | 理由 |
 |---|---|---|---|
 | `weight` | 0.1 | **0.5** | 让抬腿在楼梯奖励兑现前就有收益 |
-| `threshold` | 0.5 | **0.05**（2026-10-15 两次：0.5→0.1→0.05） | 0.1 时该项仍为负（多数轮抬腾空 <0.1 s）；0.05 只滤接触抖动 |
+| `threshold` | 0.5 | **0.02**（2026-10-15 三次：0.5→0.1→0.05→**0.02**） | 0.1 时该项仍为负（多数轮抬腾空 <0.1 s）；0.05 时残余 −0.0015 来自 0.02–0.05 s 的短腾空被倒扣，0.02 才把它们转正（`velocity_env_cfg.py:431-442` 注释） |
 
 **验收指标**（每 6 h 看四条曲线，防作弊转移）：`Episode_Reward/feet_air_time` 转正（治本信号）、
 `pyramid_stairs_success_rate` > 0.85、`Episode_Reward/feet_slide`（脚滑惩罚）下降、
@@ -1335,11 +1540,46 @@ python scripts/diagnose/smoke_env_obs.py --headless --num_envs 32 --steps 30
 #    带 Airy 传感器的 B/C 受 43200 射线/env 限制，4096 已近 32 GB 天花板 → A/D 每迭代样本量是 B/C 的 5×。
 #    消融按“固定迭代数的最终性能”对比（已披露）；--video 再占 ~4 GB（B/C 逼近上限，慎用于小显存卡）。
 PY=/home/css/miniconda3/envs/env_isaaclab_sim51/bin/python
-COMMON="--headless --seed 42 --max_iterations 10000 --video --video_length 250 --video_interval 1000 --camera_view diag"
-$PY scripts/rsl_rl/train.py $COMMON --task Unitree-GeesunDog-LingsiD30W-Velocity             --num_envs 20096 --run_name airy_A_baseline
+COMMON="--headless --seed 42 --max_iterations 20000 --video --video_length 250 --video_interval 1000 --camera_view diag"
+
+
+
+$PY scripts/rsl_rl/train.py $COMMON --task Unitree-GeesunDog-LingsiD30W-Velocity             --num_envs 20096 --run_name airy_A_baseline --video_start_frac 0.5    --resume  --load_run  2026-10-20_16-22-39_airy_A_baseline  --video --video_length 500 --video_interval 10000 --camera_view side
+
+
+
 $PY scripts/rsl_rl/train.py $COMMON --task Unitree-GeesunDog-LingsiD30W-Velocity-ProprioOnly --num_envs 20096 --run_name airy_D_proprio
-$PY scripts/rsl_rl/train.py $COMMON --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace --num_envs 4096 --run_name airy_B_replace
-$PY scripts/rsl_rl/train.py $COMMON --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryStacked --num_envs 4096 --run_name airy_C_stacked
+
+
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+$PY scripts/rsl_rl/train.py $COMMON --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace --num_envs 3096 --run_name airy_B_replace  --video_start_frac 0.5   --resume  --load_run 2026-10-20_01-03-41_airy_B_replace  --video --video_length 500 --video_interval 10000 --camera_view side
+
+$PY scripts/rsl_rl/train.py $COMMON --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryStacked --num_envs 3096 --run_name airy_C_stacked
+
+# ─────────────────────────────────────────────────────────────
+# 【B 臂续训必须保住 pyramid_stairs_level（金字塔楼梯难度等级）】2026-10-20
+# 上面那条 B 命令（--num_envs 3096 续训 4096 envs 的 run）在修复前会把楼梯等级 5.05 打到 0.49、
+# x_max 0.3 打到 0.1（sidecar 的 num_envs 校验失败 → 随机初始化 → 写回覆盖，见「验证训练结果 §前置检查」）。
+# 开跑前确认 B 臂自己的 sidecar（旁路状态文件）在位且数值对：
+EXP=logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x
+ls -l $EXP/terrain_levels_state_airy_B.json $EXP/curriculum_state_airy_B.json
+$PY - <<'EOF'
+import json
+d = json.load(open("logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x/terrain_levels_state_airy_B.json"))
+print("by_type:", d["by_type"], "| num_envs:", d["num_envs"], "| max_level:", d["max_level"])
+print("layout:", d["layout"])
+EOF
+# 期望 by_type 里 pyramid_stairs ≈ 5.05、layout = {num_rows 10, num_cols 20,
+#       sub_terrains {flat 0.1, random_rough 0.2, pyramid_stairs 0.2}}（必须与 train cfg 逐字相同）
+# 缺文件或值不对 → 先重建再训练：
+$PY scripts/diagnose/rebuild_terrain_state_from_tb.py \
+    --tb_run $EXP/2026-10-20_01-03-41_airy_B_replace --arm airy_B --num_envs 3096 --step 240000
+# 启动日志两条判定（缺一不可）：
+#   [INFO] terrain_levels sidecar (旁路状态文件): .../terrain_levels_state_airy_B.json
+#   [INFO] Restored terrain levels (exact|by type, ...) ... | flat=... pyramid_stairs=4.94 ...
+# 跑起来后 TB：pyramid_stairs_level 从 ~5 起步（不是 0.5）、x_max 从 0.3 起步（不是 0.1）。
+# ─────────────────────────────────────────────────────────────
+
 
 # 或直接交给排队脚本（等当前 B 跑完自动接 A → D → C，见 scripts/train_airy_ablation_queue.sh）
 setsid nohup bash scripts/train_airy_ablation_queue.sh > outputs/train_airy_queue_stdout.log 2>&1 &
@@ -1368,6 +1608,32 @@ bash scripts/train_airy_ablation_queue_v2.sh 200      # 全局覆盖：四组都
 # ⚠️ 绝不要边跑边编辑“正在运行的脚本文件”：bash 进程持有该脚本的 fd（看 /proc/<pid>/fd/255），
 #    改文件会让它的读取偏移错位，后续行可能从中间开始解析（语法错乱 / 漏跑 / 意外接力）。
 #    训练进行中要改配置 → 新建脚本文件（如 v2）；等没有队列在跑时再 cp 覆盖回旧文件名。
+
+# ─────────────────────────────────────────────────────────────
+# 【B/C 组启动即崩（CUDA OOM，显存溢出）根因与修复】2026-10-20
+# 症状：airy_B_replace / airy_C_stacked 在启动后 19~54 秒退出；队列日志记 exit code 0 但没有
+#       Learning iteration（学习迭代）行 —— 之前被误判为"两个 Isaac Sim 并发硬 abort"。
+# 根因（两处叠加；4096 envs × 43200 rays/env，Airy 激光雷达基线已占 26.8 GB）：
+#   1) sensors/airy_bev.py 旧实现把距离分箱写成广播比较 (r.unsqueeze(-1) >= edge_inner).sum(-1)，
+#      物化 (N, B, n_dist) 中间张量（3.3 GiB bool / 13.2 GiB float 级），外加逐 env 的 4096 次
+#      scatter 调用。已修：torch.searchsorted(edges[:-1], r, right=True)（O(B) 显存）+ 每个
+#      ray-chunk 一次向量化 scatter_reduce_。实测 4096×43200 峰值额外显存 3.04 GiB（chunk=8192），
+#      且与旧实现逐位相同（bit-identical）。
+#   2) Isaac Lab ray_caster.py:287 每步都要 quat_w.repeat(1, num_rays)（2.83 GiB）+ 输出（2.12 GiB），
+#      而 PyTorch 缓存分配器有 1.6 GiB reserved-but-unallocated 碎片 → 1.98 GiB 分配失败。
+#      已修：PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True（可扩展显存段），已写进两个队列脚本。
+# 自检（纯 torch，不启动 Isaac Sim；对比新旧实现 + 显存探针）：
+/home/css/miniconda3/envs/env_isaaclab_sim51/bin/python scripts/diagnose/check_airy_bev_mem.py
+#   期望：quat=False/True bit-identical、chunk=1 == chunk=8192 bit-identical、
+#         new impl peak extra VRAM @ 4096x43200 ≈ 3.04 GiB、old impl OOM（即被修掉的 bug）
+# 端到端冒烟（2026-10-20 实测通过）：
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $PY scripts/rsl_rl/train.py --headless \
+    --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace --num_envs 4096 --seed 42 \
+    --max_iterations 20 --run_name airy_B_smoke
+#   实测：B 组 20/20 迭代完成、零 OOM、峰值显存 31839 MiB、6.73~7.00 s/iter
+#         C 组（AiryStacked，多 height_scanner 187 维）20/20 完成、零 OOM、峰值 31885 MiB
+# ⚠️ 显存余量只剩 ~0.7 GiB：B/C 组不要再加 --video（录像额外 ~4 GB），不要提高 num_envs，
+#    也不要与 A/D（20096 envs）并发 —— 必须串行。
 
 # ─────────────────────────────────────────────────────────────
 # 【队列健康自检 / 挂起死锁排障】（2026-10-19 实测教训）
@@ -1422,15 +1688,30 @@ EXP=logs/rsl_rl/unitree_geesun_lingsi_d30w_ht_stairs_10x
 # 查所有 run 与最新 checkpoint：
 #   ls -t $EXP | head ; ls $EXP/<RUN>/model_*.pt | sort | tail -1
 
-# A 基线（已训完，✓ 可测）
-$PY scripts/rsl_rl/play.py --headless \
-  --task Unitree-GeesunDog-LingsiD30W-Velocity \
-  --checkpoint $EXP/2026-10-16_13-44-35_airy_A_baseline/model_9999.pt
+# A 基线（已训完 10400 迭代，✓ 可测）——楼梯 + 自由视角，2026-10-20 实测通过
+# ⚠ 任务名**没有** -airy_A_baseline 后缀：run_name（运行名）不是 task id 的一部分，
+#    注册任务只有 -Velocity(A) / -AiryReplace(B) / -AiryStacked(C) / -ProprioOnly(D) 四个
+#    （见 lingsi_d30w/__init__.py 的 _register 调用）
+# ⚠ 该 run 的 checkpoint 是 100 的整数倍（model_7300 … model_10400），**没有 model_9999.pt**
+RUN=$EXP/2026-10-21_00-51-44_airy_A_baseline
 
-# B Airy 替代（⚠ 先训练 airy_B_replace）
-$PY scripts/rsl_rl/play.py --headless \
-  --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace \
-  --checkpoint $EXP/<airy_B_replace_RUN>/model_XXXX.pt
+/home/css/miniconda3/envs/env_isaaclab_sim51/bin/python scripts/rsl_rl/play.py \
+  --task Unitree-GeesunDog-LingsiD30W-Velocity \
+  --checkpoint $RUN/model_20399.pt \
+  --num_envs 4 --no_standing --no_curriculum --real-time \
+  --camera_view side --camera_eye 6 6 3.0 --camera_target 0 0 0.3 \
+  --terrain stairs --cmd_x 0.2 0.4 --cmd_y -0.1 0.1 --cmd_z -0.3 0.3 --episode_length_s 35 
+#   实测日志三行（缺一不可，证明"确实是 A 臂 + 楼梯已生成 + 维度匹配"）：
+#   [INFO]: Parsing configuration from: ...velocity_env_cfg:RobotPlayEnvCfg
+#   [INFO] Terrain mode: stairs (5x4 grid: stairs x 1.0)
+#   Actor MLP: Linear(in_features=57 … out_features=16) / Critic MLP: Linear(in_features=263 …)
+# 产物：$RUN/videos/stairs_A_10400/rl-video-step-0.mp4 = 1280x720 / 50 fps / 499 帧 / 9.98 s
+# 楼梯 + 自由视角（GUI 里自由转视角）的完整命令见下一节「A 臂楼梯回放 + 自由视角」
+
+# B Airy 替代（⚠ 先训练 airy_B_replace）  --headless
+$PY scripts/rsl_rl/play.py \
+  --task Unitree-GeesunDog-LingsiD30W-Velocity-AiryReplace  --video_start_frac 0.5 --terrain complex \
+  --checkpoint $EXP/2026-10-21_00-51-44_airy_A_baseline/model_20399.pt
 
 # C Airy 堆叠（⚠ 先训练 airy_C_stacked）
 $PY scripts/rsl_rl/play.py --headless \
@@ -1444,6 +1725,129 @@ $PY scripts/rsl_rl/play.py --headless \
 
 # 可选 flags：--num_envs 256（并行加速统计） / --video --camera_view diag（录视频） / --real-time
 ```
+
+#### A 臂楼梯回放 + 自由视角（free camera，自由视角）——2026-10-20 实测通过
+
+**① 为什么默认回放里"没有楼梯"（根因，已逐行核对 IsaacLab 源码）**
+
+`RobotPlayEnvCfg.__post_init__`（`lingsi_d30w/velocity_env_cfg.py:641-642`）把地形网格压成
+**2 行 × 1 列**，而 `RobotEnvCfg.__post_init__` 同时把 `terrain_generator.curriculum = True`
+（同文件 630 行）。IsaacLab 在 `curriculum=True` 时走
+`terrains/terrain_generator.py::_generate_curriculum_terrains()`，它是**按列**分配子地形的：
+
+```python
+sub_index = np.min(np.where(index / self.cfg.num_cols + 0.001 < np.cumsum(proportions))[0])
+```
+
+`num_cols = 1` → 只有 `index = 0` → `0.001 < cumsum[0] = 0.1667`（flat 归一化比例 1/6）
+→ `sub_index = 0` = **flat**。于是整张 play 网格 = **2 格全平地**，
+楼梯与 random_rough（随机粗糙）**一个都不会生成**（确定性结论，不是"随机没抽到"）。
+
+→ 要测楼梯必须显式 **`--terrain stairs`**：地形预设（terrain preset，地形预设）把整个
+`terrain_generator` 替换成 **5 行 × 4 列全楼梯**（`scripts/rsl_rl/terrain_presets.py:107-121`），
+并把 `max_init_terrain_level` 设为 `num_rows-1 = 4` → 出生随机铺满全部难度行；
+踏步高取 task cfg 的 `step_height_range=(0.05, 0.23)` m（与 GO2 逐字一致）。
+启动日志必须出现这一行，才证明楼梯真的生成了：
+
+```
+[INFO] Terrain mode: stairs (5x4 grid: stairs x 1.0)
+```
+
+**② 自由调整视角（GUI，图形界面）——只有 `free` 可行**
+
+```bash
+# GUI（去掉 --headless）+ --camera_view free：机位只在首帧设一次，之后完全不动，
+# 可在 Kit 视口（viewport，图形窗口）里自由拖动 / 旋转 / 缩放
+DISPLAY=:1 $PY scripts/rsl_rl/play.py \
+  --task Unitree-GeesunDog-LingsiD30W-Velocity \
+  --checkpoint $RUN/model_10400.pt \
+  --num_envs 4 --no_standing --no_curriculum --real-time \
+  --camera_view free --camera_eye 6 6 3.0 --camera_target 0 0 0.3 \
+  --terrain stairs --cmd_x 0.2 0.4 --cmd_y -0.1 0.1 --cmd_z -0.3 0.3
+```
+
+| 需求 | 参数 | 原因 |
+|---|---|---|
+| 一眼看全 5×4 楼梯场 | `--camera_view free --camera_eye 6 6 3.0 --camera_target 0 0 0.3` | 2026-10-20 实测机位：整场楼梯入画，机器狗在画面内 |
+| 窗口里手动拖动/旋转不被覆盖 | **必须 `free`** | `side`/`rear`/`diag` 每步都调用 `_follow_camera()`（`play.py:425`），手动机位下一步就被搬回机器身上 |
+| 慢动作看清抬腿/打滑 | `--real-time` | 默认是尽快仿真（远快于实时）；该参数按 `step_dt = 0.02` → 50 Hz 节流 |
+| 抬高机位 | `free`：直接写 `--camera_eye` 的 z；跟拍：`--camera_height` | `free` 不受 height/distance 约束，高度就是 eye 的 z |
+| 同时录像 | `--video --video_length 500 --video_tag stairs_A_10400` | 录像走同一台视口相机；实测 499 帧 / 9.98 s / 440 KB / 零黑帧 |
+
+> 楼梯难度旋钮：`--stair_height 0.03 0.10` = 轮半径 0.095 m 的保守上限（只看低难度台阶）；
+> 不带 = task cfg 的 0.05–0.23 m（与 GO2 严格消融对照）。
+> `--cmd_x` 必须 ≤ 该臂 TB 上的 `Curriculum/lin_vel_cmd_levels/x_max`（A 臂 = **±0.45 m/s**）
+> → 楼梯测试用 `--cmd_x 0.2 0.4`。
+> 同一 GPU（图形处理器）只能跑一个 Isaac Sim 实例，GUI 回放前先停训练与守护进程（见「前置检查」）。
+
+**③ A 臂训练结果（TensorBoard 末 50 迭代均值，run `2026-10-20_19-03-11_airy_A_baseline`，iter 7300→10400）**
+
+| 指标 | 值 | 判读 |
+|---|---|---|
+| `Train/mean_reward` | 26.49 | 已收敛 |
+| `Train/mean_episode_length` | 958 / 1000 | 接近跑满 |
+| `Metrics/base_velocity/error_vel_xy` / `_yaw` | 0.216 m/s / 0.312 rad/s | 达标（验收线 0.25 / 0.35） |
+| `Episode_Termination/time_out` | 0.897 | **低于验收线 0.99** |
+| `Episode_Termination/bad_orientation`（摔倒终止） | 0.104 | **超验收线 0.01 约 10 倍 → 未过验收** |
+| `Episode_Termination/base_contact`（机身触地） | 0.000 | 达标 |
+| `Curriculum/terrain_levels`（地形难度均值） | 5.89 | 中高难度 |
+| `Curriculum/lin_vel_cmd_levels/x_max` | 0.450（全程最大也是 0.450） | 比 B 臂 0.300 高 50% → **与 B/D 对比必须按同命令范围比** |
+| `flat` level / success_rate / err_xy | 5.98 / 1.000 / 0.089 | 达标 |
+| `random_rough` level / success_rate / err_xy | 6.01 / 0.9997 / 0.102 | 达标 |
+| `pyramid_stairs` level / success_rate / err_xy / err_yaw | 5.73 / **0.659** / 0.137 / 0.206 | **短板：楼梯成功率 0.659 ≪ 验收线 0.90** |
+
+→ 与 B 臂（楼梯成功率 0.641、`x_max` 0.30）几乎持平：**在楼梯这一项上 `height_scanner`（高度扫描传感器）
+相对 Airy BEV 没有明显收益**；两臂楼梯成功率都远低于 flat / random_rough（≈1.0）。
+录像与定量测试都应重点跑楼梯（`--terrain stairs`）。
+
+
+**⑤ 楼梯定量测试实测（2026-10-20 23:01，`model_10400.pt`，`--terrain stairs --num_envs 16 --steps 1000`）**
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $PY -u scripts/rsl_rl/test_walk_torque.py \
+    --headless --task Unitree-GeesunDog-LingsiD30W-Velocity \
+    --checkpoint $RUN/model_10400.pt --terrain stairs --num_envs 16 --steps 1000
+# 产物：<run>/stairs_terrain_stats.csv（逐关节 Peak/P99/RMS + 行走指标）
+```
+
+| 指标 | 实测值 | 判读 |
+|---|---|---|
+| `success_rate`（成功率） | **0.875** | 看着达标 |
+| `average_forward_velocity_ms`（平均前进速度） | **0.011 m/s** | **机器狗在楼梯上基本停住不动** |
+| `mean_error_xy_ms` / `mean_error_yaw_rads` | 0.117 / 0.155 | 低于 0.25 / 0.35 判据 |
+| `height_variance_m2`（高度方差） | 0.00093 | 几乎没有上下起伏（没在爬） |
+| `ALL (pooled)` Peak / P99 / RMS 力矩 | 61.13 / 20.21 / 6.96 N·m | calf 峰值最高 61.1（上限 136，未饱和） |
+| **轮子（wheel）峰值力矩** | fl 19.96 / fr 14.31 / **hl 20.00** / hr 19.66 N·m | **3/4 个轮子打满 20 N·m 上限 → 力矩饱和（torque saturation，力矩饱和）** |
+
+> **⚠ 判据漏洞（本次实测暴露）：** `test_walk_torque.py:250` 与课程门控
+> （`curriculums.py:450-451`，`success_xy = 0.25`）的成功判据都是
+> "存活到超时 + `err_xy < 0.25` + `err_yaw < 0.35`"——**站着不动也能通过**：
+> 命令在 ±0.25 m/s 内均匀随机，静止时 `err_xy = |cmd| ≈ 0.125 < 0.25`
+> → 成功率 87.5%、判定 "Stable"，而真实前进速度只有 0.011 m/s。
+> 同理 `gated_lin_vel_cmd_levels` 的 `x_max` 也会因"静止即达标"继续爬
+> （实测每 500 迭代 +0.05，一路到 0.45 m/s）。
+> **修法（改动最小，一处一条判据）**：给成功判据加前进位移下限，例如
+> `forward_ok = mean(base_lin_vel_x) >= 0.5 * |cmd_x|`，与现有三条判据取与（AND）；
+> 测试脚本与课程各改一处，A/B/C/D 四臂同步生效。
+>
+> **楼梯失败的物理口径：** 踏步 0.23 m > 轮径 0.19 m，必须靠 12 个腿关节把轮心抬过踏步；
+> 轮子 effort 上限 20 N·m（URDF 口径，`UnitreeActuatorCfg_D30W` 的 wheel `Y=20`）在楼梯接触工况下
+> **已饱和**，轮子既出不了牵引也抬不起机身；腿侧未饱和（hip/thigh 峰值 26–43 / 上限 72，
+> calf 峰值 61 / 上限 136）→ **瓶颈不在腿的力矩上限，而在策略没学会抬腿过踏步**
+> （`Episode_Reward/feet_air_time` 末段仅 +0.0036，抬腿收益太弱）。
+
+
+**④ D 臂闸门：`terrain_levels` 全程冻结的根因（2026-10-20 实测）**
+
+D 臂 run `2026-10-19_22-55-51_airy_D_proprio`（1000 迭代）的 `Curriculum/terrain_levels`
+**全程恒为 0.5054**、`x_max` 恒为 0.100→0.1021。原因：`terrain_levels_vel_strict` 里
+`gate_open = x_max >= min_x_max_for_move_up`，而 cfg 的 `min_x_max_for_move_up = 0.2`
+（`lingsi_d30w/velocity_env_cfg.py:517`，**不是本文旧版写的 0.3**）；`x_max` 从 0.1 起步、
+每档 `lin_increment = 0.05`，1000 迭代内没爬到 0.2 → 闸门从未打开 → 地形**双向冻结**
+（`mdp/curriculums.py:227-232`；冻结是设计行为，不是 bug）。
+判据：TB 上 `Curriculum/terrain_levels` 是一条水平直线 **且** `x_max < 0.2` = 闸门未开
+→ **该 run 不能用于消融结论**（D 臂与 A 臂同为 20096 envs，建议 ≥ 3000 迭代再看曲线）。
+
 
 产物落在 `outputs/verify_airy*/`（`stats.json` / `bev.png` / 点云 CSV·PLY）。
 
