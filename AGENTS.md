@@ -1,4 +1,19 @@
 在CONDA环境env_isaaclab_sim51中，训练G1和GO2, Unitree-GeesunDog-LingsiD30W-Velocity在复杂地形行走和速度跟踪的能力，评估启用 height_scanner的收益和风险。
+腿和关节的序号：
+Leg 0 ：FR，右前腿
+Leg 1 ：FL，左前腿
+Leg 2 ：RR，右后腿
+Leg 3 ：RL，左后腿
+Joint 0 ：Hip，机身关节
+Joint 1 ：Thigh，大腿关节
+Joint 2 ：Calf，小腿关节
+e.g.FR_thigth：右前腿大腿关节\
+
+各关节限位：
+机身关节：-48°~48°
+大腿关节：竖直方向为0°，前进方向为正，后腿-260°~30°，前腿-200°~90°
+小腿关节： -156°~-48°
+
 守护进程scripts/monitor_tb_check.py，每6个小时监控TensorBoard里面的各项训练曲线，发现训练曲线恶化后，自动停止训练，并修改代码，调整超参数，重新训练。
 要求改动尽量小，方便做消融对照实验。
 训练完成后，如何验证训练结果？`unitree_rl_lab` 的 editable 安装实际没有指向本仓库的问题还存在吗

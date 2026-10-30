@@ -106,6 +106,28 @@ parser.add_argument(
     help="Override the stair riser height range (m) used by the 'stairs'/'complex' terrain presets.",
 )
 parser.add_argument(
+    "--stairs_dir",
+    type=str,
+    default="down",
+    choices=["up", "down"],
+    help=(
+        "Stair walking direction (上/下楼梯方向) for the 'stairs'/'complex' presets: "
+        "'down' (default) = spawn on the pyramid top platform and descend (下楼梯), "
+        "'up' = spawn in the inverted-pyramid pit bottom and climb (上楼梯). Same step geometry."
+    ),
+)
+parser.add_argument(
+    "--stair_level",
+    type=int,
+    default=None,
+    metavar="N",
+    help=(
+        "Stair level (楼梯等级) 0-9, aligned with the training terrain_levels scale: maps to a fixed "
+        "riser height h_min + N/9 * (h_max - h_min) m (9 -> 0.23 m for lingsi_d30w). "
+        "Mutually exclusive with --stair_height (which wins if both are given)."
+    ),
+)
+parser.add_argument(
     "--cmd_x",
     type=float,
     nargs=2,
@@ -128,6 +150,16 @@ parser.add_argument(
     default=None,
     metavar=("MIN", "MAX"),
     help="Override the yaw velocity command range (rad/s). Default: the play config's full range.",
+)
+parser.add_argument(
+    "--probe",
+    action="store_true",
+    default=False,
+    help=(
+        "2026-10-30: print every 25 steps, per env, the base height in world frame, the terrain "
+        "origin height and (z - origin) plus the terrain level. Used to verify numerically that a "
+        "policy really climbs the stairs instead of trusting summary metrics or a video."
+    ),
 )
 parser.add_argument(
     "--video_tag",
@@ -300,7 +332,14 @@ def main():
             entry_point_key="play_env_cfg_entry_point",
         )
     # evaluation terrain (--terrain): 'play' (default) keeps the play-config terrain untouched
-    print(f"[INFO] Terrain mode: {apply_terrain(env_cfg, args_cli.terrain, stair_height=args_cli.stair_height)}")
+    terrain_desc = apply_terrain(
+        env_cfg,
+        args_cli.terrain,
+        stair_height=args_cli.stair_height,
+        stairs_dir=args_cli.stairs_dir,
+        stair_level=args_cli.stair_level,
+    )
+    print(f"[INFO] Terrain mode: {terrain_desc}")
     if args_cli.no_curriculum:
         env_cfg.curriculum = None
     if args_cli.no_standing:
@@ -487,6 +526,20 @@ def main():
             target = [float(pos[0]), float(pos[1]), float(pos[2] + 0.15)]
         vp_utils.set_camera_view(eye=eye, target=target, camera_prim_path="/OmniverseKit_Persp")
 
+    def _probe(env_) -> None:
+        """Print base height vs terrain origin (the pit floor) for the first few envs."""
+        unwrapped = env_.unwrapped
+        z = unwrapped.scene["robot"].data.root_pos_w[:, 2].cpu()
+        origin_z = unwrapped.scene.terrain.env_origins[:, 2].cpu()
+        levels = unwrapped.scene.terrain.terrain_levels.cpu()
+        parts = []
+        for i in range(min(int(z.shape[0]), 4)):
+            parts.append(
+                f"env{i}: z={float(z[i]):+.2f} pit={float(origin_z[i]):+.2f} "
+                f"dz={float(z[i] - origin_z[i]):+.2f} lvl={int(levels[i])}"
+            )
+        print(f"[PROBE] step {timestep:4d} | " + " | ".join(parts), flush=True)
+
     timestep = 0
     # simulate environment
     while simulation_app.is_running():
@@ -499,6 +552,8 @@ def main():
             obs, _, _, _ = env.step(actions)
         # camera follows the robot so recordings stay framed on it
         _follow_camera()
+        if args_cli.probe and timestep % 25 == 0:
+            _probe(env)
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video

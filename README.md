@@ -219,7 +219,7 @@
 ```bash
 # 平地名义工况，自动加载最新 checkpoint
 conda run -n env_isaaclab_sim51 python scripts/rsl_rl/test_walk_torque.py \
-    --task Unitree-Go2-Velocity \
+    --task Unitree-GeesunDog-Dog1-Velocity \
     --terrain flat \
     --steps 500
 

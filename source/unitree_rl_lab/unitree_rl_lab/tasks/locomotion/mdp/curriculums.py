@@ -430,6 +430,205 @@ def terrain_performance_by_type(
     return result
 
 
+def stairs_updown_performance(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    command_name: str = "base_velocity",
+    success_xy: float = 0.25,
+    success_yaw: float = 0.35,
+    forward_ok_ratio: float = 0.5,
+    dz_threshold: float = 0.06,
+    upright_gravity_z: float = -0.6,
+) -> dict[str, torch.Tensor]:
+    """Split the stairs statistics by CLIMB DIRECTION (up vs down), 2026-10-27 P0-3.
+
+    The curriculum cannot tell "climbed the stairs" from "descended the stairs": descending
+    is nearly free (gravity + braked wheels), so a policy that only descends keeps
+    satisfying the promotion gate and the terrain level plateaus exactly where ascending
+    stops working (measured 2026-10-24: level 5.16 = 0.153 m riser, stairs success 0.53,
+    time_out 0.52; the recorded videos show "下楼可以、爬楼失败").
+
+    Every env is classified by the net base-height change over its CURRENT episode
+    (``dz > +dz_threshold`` = climbing, ``dz < -dz_threshold`` = descending), and the two
+    groups get their own success rate / tracking errors, so the asymmetry becomes visible
+    in TensorBoard instead of only on video. Envs that are still on the spawn platform
+    (|dz| <= threshold) are excluded - they neither climbed nor descended.
+
+    Note the classification is per episode, so a policy that climbs then falls classifies
+    as "up" by its net displacement; pair it with ``Episode_Termination/bad_orientation``.
+
+    2026-10-27 (v2): an UPRIGHT gate is applied - a robot that collapses at spawn drops its
+    base by ~0.11 m, which the raw height delta read as "descending" (measured: iteration 55
+    of a fresh run reported down_share 0.98 / up_share 0.00 while nothing had walked yet).
+    Envs whose base is tilted past ``upright_gravity_z`` are excluded from both groups.
+    """
+    command_term = env.command_manager.get_term(command_name)
+    robot = env.scene["robot"]
+    base_z = robot.data.root_pos_w[:, 2]
+    # per-episode start height: refresh for envs that just reset, keep it otherwise
+    start_z = getattr(env, "_stairs_start_z", None)
+    if start_z is None or start_z.shape[0] != base_z.shape[0]:
+        start_z = base_z.clone()
+        env._stairs_start_z = start_z
+    just_reset = env.episode_length_buf <= 1
+    start_z[just_reset] = base_z[just_reset]
+    dz = (base_z - start_z)[env_ids]
+
+    err_xy = _episode_mean_error(env, env_ids, command_term, "error_vel_xy")
+    err_yaw = _episode_mean_error(env, env_ids, command_term, "error_vel_yaw")
+    valid = env.episode_length_buf[env_ids] > 0
+    # upright gate: projected_gravity_b[:, 2] ~= -1 when the base is level, > -0.6 when tipped
+    upright_all = robot.data.projected_gravity_b[:, 2] < upright_gravity_z
+    upright = upright_all[env_ids]
+    time_outs = getattr(env, "reset_time_outs", None)
+    survived = torch.ones_like(valid) if time_outs is None else time_outs[env_ids].bool()
+    forward_ok, cmd_active = _episode_forward_ok(env, env_ids, command_term, forward_ok_ratio)
+
+    result: dict[str, torch.Tensor] = {}
+    for label, direction_mask in (("up", dz > dz_threshold), ("down", dz < -dz_threshold)):
+        mask = direction_mask & valid & upright
+        if cmd_active is not None:
+            mask = mask & cmd_active
+        if torch.any(mask):
+            success = survived[mask] & (err_xy[mask] < success_xy) & (err_yaw[mask] < success_yaw)
+            if forward_ok is not None:
+                success = success & forward_ok[mask]
+            result[f"{label}_success_rate"] = torch.mean(success.float())
+            result[f"{label}_error_xy"] = torch.mean(err_xy[mask])
+            result[f"{label}_error_yaw"] = torch.mean(err_yaw[mask])
+            result[f"{label}_mean_dz"] = torch.mean(dz[mask])
+        else:  # keep the tag alive at 0 so the TB curve does not vanish mid-run
+            result[f"{label}_success_rate"] = torch.zeros((), device=dz.device)
+        result[f"{label}_share"] = torch.mean((direction_mask & upright).float())
+    result["upright_share"] = torch.mean(upright.float())
+    return result
+
+
+def freeze_terrain_levels(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    max_level: int = 2,
+) -> dict[str, torch.Tensor]:
+    """Cap the terrain curriculum difficulty (2026-10-28 P0-B).
+
+    The stock ``terrain_levels_vel`` term promotes an env when its horizontal travel
+    exceeds half a terrain tile (4 m). On stairs that criterion is broken: measured on run
+    ``2026-10-27_23-15-44`` the mean level went 0.51 -> 5.70 within **1142 iterations**
+    while ``stairs_updown/up_share`` stayed **0.0000** - the robot was skittering around
+    the pit floor / against the first riser, never climbing, and the level distribution
+    piled up on level 9 (0.23 m risers) where climbing is impossible for a wheel-locked
+    quadruped. The curriculum then froze for the remaining 8000 iterations.
+
+    This term runs AFTER ``terrain_levels`` in the CurriculumCfg dict order and simply
+    clamps ``terrain.terrain_levels`` to ``max_level``, so every future reset spawns on an
+    easy column (level 2 -> riser 0.05 + 2/9 x 0.18 = 0.09 m). It reports both the level
+    the curriculum WANTED (``desired``) and the one actually applied (``applied``), so the
+    gap shows how badly the stock gate over-estimates progress.
+
+    Set ``max_level < 0`` to disable (pure stock behaviour).
+    """
+    del env_ids
+    terrain = env.scene.terrain
+    desired = torch.mean(terrain.terrain_levels.float())
+    if max_level >= 0:
+        terrain.terrain_levels.clamp_(max=max_level)
+    applied = torch.mean(terrain.terrain_levels.float())
+    return {"desired": desired, "applied": applied}
+
+
+def adaptive_stairs_levels(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    enabled: bool = True,
+    start_cap: int = 1,
+    max_level: int = 9,
+    min_level: int = 0,
+    promote_share: float = 0.55,
+    demote_share: float = 0.25,
+    cooldown_steps: int = 1500,
+    ema_beta: float = 0.999,
+    dz_threshold: float = 0.06,
+    upright_gravity_z: float = -0.6,
+) -> dict[str, torch.Tensor]:
+    """Terrain curriculum driven by ACTUAL CLIMBING, not horizontal travel (2026-10-30).
+
+    Why the stock gate has to be replaced (measured twice):
+      * 2026-10-27: level 0.51 -> 5.70 within 1142 iterations while ``up_share`` was
+        0.0000, then frozen for 8000 iterations - ``terrain_levels_vel`` promotes on 4 m of
+        HORIZONTAL travel, which on stairs is satisfied by skittering around the pit floor;
+      * 2026-10-29: the same gate wanted level 2.0 and had to be hard-clamped.
+
+    This term reads the same signal the diagnostic uses - the share of envs whose base is
+    more than ``dz_threshold`` above its episode-start height and that are still upright -
+    smooths it with an EMA (the raw per-step share is spiky because a fresh episode starts
+    at dz=0), and moves a per-run ``cap`` one row up when the EMA is above
+    ``promote_share`` and one row down when it is below ``demote_share``. Rows are the
+    terrain difficulty ladder, so the riser grows 0.02 -> 0.23 m in ten rungs and the robot
+    only ever sees a step it has demonstrably been able to climb.
+
+    ``cooldown_steps`` (~30 s = 1.5 episodes at 50 Hz) prevents oscillating promotions, and
+    the EMA is re-centred after every move so the next move needs fresh evidence.
+
+    Set ``enabled=False`` to make it a pure observer (no clamping).
+    """
+    terrain = env.scene.terrain
+    robot = env.scene["robot"]
+    if not enabled:
+        return {"cap": torch.zeros((), device=env.device), "up_share_ema": torch.zeros((), device=env.device)}
+
+    state = getattr(env, "_stairs_adaptive", None)
+    if state is None:
+        # start neutrally: ema at half the promotion threshold and a full cooldown, so the very
+        # first calls (policy still collapsing, dz = 0) cannot demote the cap before any evidence
+        state = {"cap": float(start_cap), "ema": 0.5 * promote_share, "cool": cooldown_steps}
+        env._stairs_adaptive = state
+
+    # --- measure the climbing share exactly like stairs_updown_performance -----------------
+    base_z = robot.data.root_pos_w[:, 2]
+    start_z = getattr(env, "_stairs_adapt_start_z", None)
+    if start_z is None or start_z.shape[0] != base_z.shape[0]:
+        start_z = base_z.clone()
+        env._stairs_adapt_start_z = start_z
+    just_reset = env.episode_length_buf <= 1
+    start_z[just_reset] = base_z[just_reset]
+    dz = base_z - start_z
+    upright = robot.data.projected_gravity_b[:, 2] < upright_gravity_z
+    # IMPORTANT (2026-10-30 fix): CurriculumManager.compute() is called from _reset_idx with the
+    # ids of the envs being reset, i.e. ~1000 steps into their episode and just before
+    # scene.reset() - so base_z here is the END of a FINISHED episode. Averaging over ALL envs
+    # instead (the first version of this function) mixed in envs that had just spawned
+    # (dz = 0) and diluted the share: measured 0.505 while stairs_updown (which honours
+    # env_ids) reported 0.653 at the same step, so the cap never promoted (threshold 0.55).
+    # Restricting to env_ids measures exactly "fraction of finished episodes that climbed".
+    climbed = ((dz > dz_threshold) & upright)[env_ids]
+    share = torch.mean(climbed.float())
+    share_f = float(share)
+
+    state["ema"] = (1.0 - ema_beta) * share_f + ema_beta * state["ema"]
+    if state["cool"] > 0:
+        state["cool"] -= 1
+    elif state["ema"] > promote_share and state["cap"] < max_level:
+        state["cap"] += 1.0
+        state["cool"] = cooldown_steps
+        state["ema"] = 0.5 * promote_share  # require fresh evidence for the next rung
+    elif state["ema"] < demote_share and state["cap"] > min_level:
+        state["cap"] -= 1.0
+        state["cool"] = cooldown_steps
+        state["ema"] = 0.5 * promote_share
+
+    cap = int(round(state["cap"]))
+    desired = torch.mean(terrain.terrain_levels.float())
+    terrain.terrain_levels.clamp_(max=cap)
+    applied = torch.mean(terrain.terrain_levels.float())
+    return {
+        "cap": torch.tensor(float(cap), device=env.device),
+        "up_share": share,
+        "up_share_ema": torch.tensor(state["ema"], device=env.device),
+        "desired": desired,
+        "applied": applied,
+    }
+
+
 def fixed_lin_vel_cmd_level(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> torch.Tensor:
     """Keep the legacy scalar tag while the stage-1 command range is frozen."""
     del env_ids

@@ -174,6 +174,92 @@ def foot_clearance_air(
     return torch.where(in_air.any(dim=1) & commanded, reward, torch.zeros_like(reward))
 
 
+def body_climb_progress(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    min_command_speed: float = 0.15,
+    climb_speed_ref: float = 0.25,
+) -> torch.Tensor:
+    """Reward ASCENDING base height while the robot is commanded to move (2026-10-27 P0-1).
+
+    Why this term exists (measured on run ``2026-10-24_15-43-11_airy_A_stairs_only``):
+    the stairs curriculum cannot discriminate climbing from descending, and the only task
+    reward is ``track_lin_vel_xy`` - i.e. HORIZONTAL velocity. Descending manufactures
+    horizontal velocity for free (gravity, and the braked wheels act as brakes), while
+    climbing costs 40 kg x 9.81 x riser of potential energy per step and additionally
+    raises every penalty term (joint_torques / action_rate / joint_acc). Consequence:
+    descending is optimal, the terrain level plateaus exactly where ascending stops
+    working (level 5.16 = 0.153 m riser, stairs success 0.53, time_out 0.52) and the
+    recorded videos show "downstairs works, upstairs fails".
+
+    The reward is a dimensionless ascent rate: ``clamp(dz/dt, 0, climb_speed_ref) /
+    climb_speed_ref`` in [0, 1], gated on a real movement command (standing envs are not
+    paid) and capped at ``climb_speed_ref`` so bunny-hopping up cannot farm it without
+    bound. With weight 1.0 it is comparable in scale to ``track_lin_vel_xy`` (both are
+    ~O(1)/s), so it rebalances the reward instead of dominating it.
+    """
+    robot: RigidObject = env.scene["robot"]
+    base_z = robot.data.root_pos_w[:, 2]
+    prev_z = getattr(env, "_climb_prev_z", None)
+    if prev_z is None or prev_z.shape[0] != base_z.shape[0]:
+        prev_z = base_z.clone()
+        env._climb_prev_z = prev_z
+    dz = base_z - prev_z
+    prev_z[:] = base_z  # keep the running reference in place (no per-call allocation)
+    climb_speed = dz.clamp(min=0.0) / float(env.step_dt)
+    reward = (climb_speed / climb_speed_ref).clamp(max=1.0)
+    if min_command_speed > 0.0:
+        command = env.command_manager.get_command(command_name)
+        commanded = torch.linalg.norm(command[:, :2], dim=1) >= min_command_speed
+        reward = reward * commanded
+    return reward
+
+
+def body_climb_progress_peak(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    min_command_speed: float = 0.15,
+    climb_speed_ref: float = 0.25,
+) -> torch.Tensor:
+    """Reward ONLY a new episode-high base height (2026-10-28 P0-A, replaces the dt form).
+
+    Why the per-step ``dz`` form had to go (measured on run ``2026-10-27_23-15-44``):
+    it scored 0.295 of the full mark while ``Curriculum/stairs_updown/up_share`` stayed at
+    **0.0000 for 9424 iterations** - i.e. the robot bobbed its base up and down in place
+    (leg lifting, trotting) and collected the "climb" reward without ever ascending a
+    single step. A per-step reward cannot tell vibration from progress.
+
+    This version pays only for the NET new maximum: ``gain = clamp(z - peak_z, 0, ...)``
+    with ``peak_z`` = highest base height reached in the CURRENT episode (reset at spawn).
+    Bobbing now pays exactly 0 because the base never exceeds its own record; the only way
+    to earn it is to actually get higher up the stairs.
+
+    Scale: reward in [0, 1] per step, capped at ``climb_speed_ref`` (0.25 m/s of ascent).
+    Because only net gains are paid, the episode total equals ``climb_height /
+    (climb_speed_ref * dt)`` = 200 x climb_height, so a 2 m climb with weight 2.0 yields
+    ~0.4/s of episode reward - competitive with ``track_lin_vel_xy`` (1.07/s) but not
+    dominant. Rollback: swap the RewTerm back to ``mdp.body_climb_progress``.
+    """
+    robot: RigidObject = env.scene["robot"]
+    base_z = robot.data.root_pos_w[:, 2]
+    peak_z = getattr(env, "_climb_peak_z", None)
+    if peak_z is None or peak_z.shape[0] != base_z.shape[0]:
+        peak_z = base_z.clone()
+        env._climb_peak_z = peak_z
+    # a fresh episode restarts the record at the spawn height (spawn z differs per level)
+    just_reset = env.episode_length_buf <= 1
+    peak_z[just_reset] = base_z[just_reset]
+    gain = (base_z - peak_z).clamp(min=0.0)
+    torch.maximum(peak_z, base_z, out=peak_z)  # in place, no per-step allocation
+    climb_speed = gain / float(env.step_dt)
+    reward = (climb_speed / climb_speed_ref).clamp(max=1.0)
+    if min_command_speed > 0.0:
+        command = env.command_manager.get_command(command_name)
+        commanded = torch.linalg.norm(command[:, :2], dim=1) >= min_command_speed
+        reward = reward * commanded
+    return reward
+
+
 def feet_too_near(
     env: ManagerBasedRLEnv, threshold: float = 0.2, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:

@@ -71,6 +71,75 @@ WHEEL_LOCKED = os.environ.get("GEESUN_D30W_WHEEL_LOCK", "1") == "1"
 #   GEESUN_D30W_JOINT_POS=0.7  give the free-wheel control arm the same penalty as the locked arm
 JOINT_POS_WEIGHT = float(os.environ.get("GEESUN_D30W_JOINT_POS", "-0.7" if WHEEL_LOCKED else "0.0"))
 
+# 2026-10-27 P0-2: stair direction of the TRAINING terrain.
+#   "up"   (default) = inverted pyramid: the spawn point sits at the pit bottom, so walking
+#                      forward CLIMBS. The terrain level can then only rise when the robot
+#                      really climbs (see the sub_terrains comment for the 2026-10-24 plateau).
+#   "down" = normal pyramid (pre-2026-10-27 behaviour): descend from the top platform.
+# Record the value in the run name - it is NOT stored in the checkpoint.
+STAIRS_DIR = os.environ.get("GEESUN_D30W_STAIRS_DIR", "up").lower()
+
+# 2026-10-28 P0-B: maximum terrain difficulty the curriculum may reach (row index 0..9).
+# On the inverted-pyramid stairs, level 2 -> riser 0.05 + 2/9 x 0.18 = 0.09 m, which is the
+# range a wheel-locked quadruped must clear with its 12 leg joints before the curriculum is
+# allowed to make it harder. -1 disables the cap (stock behaviour). Record it in the run name.
+FREEZE_LEVEL = int(os.environ.get("GEESUN_D30W_FREEZE_LEVEL", "2"))
+
+# 2026-10-29 P0-C: step height range as a switch, e.g. GEESUN_D30W_STEP_H="0.02,0.05".
+# Needed for the FEASIBILITY experiment: run 2026-10-29_16-45-15 (4969 iterations, riser 0.09 m
+# at level 2) still had feet_clearance ~= 0 (global max 0.0048) and up_share 0.0000 (global max
+# 0.0032) - not one wheel ever left the ground, so "climb 9 cm" was never even attempted.
+# Dropping the range to 0.02-0.05 m answers the only question that matters: can this morphology
+# (wheels locked, 12 leg joints, action scale 0.35 rad) lift a wheel onto ANY riser at all?
+# If up_share stays 0 at 3 cm, no reward shaping can fix it and the mechanism must change.
+STEP_HEIGHT_RANGE = tuple(float(x) for x in os.environ.get("GEESUN_D30W_STEP_H", "0.05,0.23").split(","))
+
+# 2026-10-30 P0-C: climb-driven terrain curriculum (see mdp.adaptive_stairs_levels).
+# start_cap = the row the run begins on: with STEP_H="0.02,0.23" row 1 is 0.041-0.062 m, i.e.
+# roughly twice the riser the 2026-10-29 feasibility run proved (0.02 m). The term promotes a
+# row when the EMA of the climbing share exceeds ADAPT_PROMOTE and demotes below ADAPT_DEMOTE.
+ADAPTIVE_LEVELS = os.environ.get("GEESUN_D30W_ADAPTIVE", "1") == "1"
+ADAPT_CAP = int(os.environ.get("GEESUN_D30W_ADAPT_CAP", "1"))
+ADAPT_PROMOTE = float(os.environ.get("GEESUN_D30W_ADAPT_PROMOTE", "0.55"))
+ADAPT_DEMOTE = float(os.environ.get("GEESUN_D30W_ADAPT_DEMOTE", "0.25"))
+
+# 2026-10-29 P0-B/D: gait shaping for stair climbing WITH THE WHEELS STILL LOCKED.
+# Diagnosis (run 2026-10-29_14-39-28, 1753 iterations at level<=2):
+#   * Episode_Reward/feet_clearance == 0.0000 -> `in_air.any()` was NEVER true, i.e. not a
+#     single wheel ever left the ground;
+#   * feet_air_time == 0.0065 -> no real steps either;
+#   * track_lin_vel_xy already 1.14 and feet_slide only -0.027 -> DRAGGING the four locked
+#     wheels along the floor was a strictly dominant strategy (gliding is free, stepping costs
+#     joint torque/acc/action-rate), so the robot slid around the pit floor and up_share stayed
+#     at a global max of 0.0016 - never one stair.
+# The fix is to make gliding expensive and stepping cheap+profitable:
+#   * feet_slide      -0.1 -> -0.5   (contact-gated wheel speed: dragging now costs 5x)
+#   * feet_air_time    0.5 ->  2.0   (a real step pays 4x; it was 0.0065/episode = dead)
+#   * feet_clearance target 0.30 -> 0.19 m: that is wheel centre height needed to clear a
+#     level-2 riser (0.095 radius + 0.09 step = 0.185), so a *reachable* lift now scores.
+#     With target 0.30 a 0.12 m lift scored exp(-2.6)=0.07; with 0.19 it scores 0.68 - a 9x
+#     stronger bootstrap signal for the very first lift.
+#   * leg action scale 0.25 -> 0.35 rad (+-20 deg) so the leg actually has the range to lift.
+# Rollback: GEESUN_D30W_GAIT_SHAPING=0 restores the pre-2026-10-29 weights/target,
+#           GEESUN_D30W_LEG_SCALE=0.25 restores the old action scale.
+GAIT_SHAPING = os.environ.get("GEESUN_D30W_GAIT_SHAPING", "1") == "1"
+FEET_SLIDE_WEIGHT = -0.5 if GAIT_SHAPING else -0.1
+FEET_AIR_TIME_WEIGHT = 2.0 if GAIT_SHAPING else 0.5
+CLEARANCE_TARGET_H = float(os.environ.get("GEESUN_D30W_CLEARANCE_H", "0.19" if GAIT_SHAPING else "0.30"))
+LEG_ACTION_SCALE = float(os.environ.get("GEESUN_D30W_LEG_SCALE", "0.35" if GAIT_SHAPING else "0.25"))
+
+print(
+    f"[INFO] lingsi_d30w switches: wheel_lock={'LOCKED' if WHEEL_LOCKED else 'free'}"
+    f" joint_pos_weight={JOINT_POS_WEIGHT} stairs_dir={STAIRS_DIR}"
+    f" -> {'MeshInvertedPyramidStairsTerrainCfg (climb)' if STAIRS_DIR == 'up' else 'MeshPyramidStairsTerrainCfg (descend)'}"
+    f" | terrain_level_cap={FREEZE_LEVEL if FREEZE_LEVEL >= 0 else 'none'} step_h={STEP_HEIGHT_RANGE}"
+    f" | climb_reward=peak(weight 2.0)"
+    f" | adaptive_levels={'ON' if ADAPTIVE_LEVELS else 'off'} start_cap={ADAPT_CAP}"
+    f" promote={ADAPT_PROMOTE} demote={ADAPT_DEMOTE}"
+    f" | gait_shaping={'ON' if GAIT_SHAPING else 'off'} feet_slide={FEET_SLIDE_WEIGHT}"
+    f" air_time={FEET_AIR_TIME_WEIGHT} clearance_h={CLEARANCE_TARGET_H} leg_scale={LEG_ACTION_SCALE}"
+)
+
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
     border_width=20.0,
@@ -87,9 +156,23 @@ COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
         # step_height_range is the GO2 value (0.05, 0.23) VERBATIM - strict ablation (消融对照).
         # D30W wheel radius 0.095 m -> top riser 0.23 m is 1.21x the 0.19 m wheel diameter and
         # must be cleared by the 12 leg joints alone.
-        "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+        #
+        # 2026-10-27 P0-2: CLIMB-ONLY terrain (上楼专练). GEESUN_D30W_STAIRS_DIR=up (default)
+        # uses the INVERTED pyramid: the spawn point sits at the pit bottom, so walking forward
+        # CLIMBS. Reason: with the normal pyramid the curriculum cannot tell climbing from
+        # descending - descending is nearly free, keeps satisfying the promotion gate, and the
+        # level plateaued exactly where ascending stopped working (2026-10-24: level 5.16,
+        # stairs success 0.53, time_out 0.52 => "下楼可以、爬楼失败"). With climb-only terrain
+        # the terrain level can only rise when the robot really climbs.
+        # Set GEESUN_D30W_STAIRS_DIR=down to restore the pre-2026-10-27 behaviour; record the
+        # value in the run name (it is NOT stored in the checkpoint).
+        "pyramid_stairs": (
+            terrain_gen.MeshInvertedPyramidStairsTerrainCfg
+            if STAIRS_DIR == "up"
+            else terrain_gen.MeshPyramidStairsTerrainCfg
+        )(
             proportion=1.0,
-            step_height_range=(0.05, 0.23),
+            step_height_range=STEP_HEIGHT_RANGE,  # GEESUN_D30W_STEP_H, default (0.05, 0.23)
             step_width=0.3,
             platform_width=3.0,
             border_width=1.0,
@@ -288,7 +371,12 @@ class ActionsCfg:
     JointPositionAction = mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=LEG_JOINT_NAMES,
-        scale=0.25,
+        # 2026-10-29 P0-D: 0.25 -> 0.35 rad (+-20 deg around the default pose). With the wheels
+        # locked the 12 leg joints are the ONLY way to lift a wheel over a riser, and 0.25 rad
+        # caps how far a leg can reach; the gait measured on 2026-10-29 never lifted a wheel at
+        # all (feet_clearance == 0). NOTE this changes the action semantics, so checkpoints from
+        # before today cannot be resumed meaningfully (they are useless anyway: up_share 0).
+        scale=LEG_ACTION_SCALE,
         use_default_offset=True,
         clip={".*": (-100.0, 100.0)},
     )
@@ -401,6 +489,24 @@ class RewardsCfg:
     track_ang_vel_z = RewTerm(
         func=mdp.track_ang_vel_z_exp, weight=0.75, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
+    # 2026-10-27 P0-1: CLIMB reward. Without it the only task reward is horizontal velocity,
+    # which descending gets for free (gravity + braked wheels as brakes) while ascending pays
+    # 40 kg x 9.81 x riser per step plus larger penalty terms -> "downstairs ok, upstairs fails"
+    # (measured 2026-10-24: level 5.16 = 0.153 m riser, stairs success 0.53, time_out 0.52).
+    #
+    # 2026-10-28 P0-A: switched to the PEAK form. The original per-step dz version paid 0.295
+    # of the full mark while up_share stayed 0.0000 for 9424 iterations - the robot bobbed its
+    # base in place (leg lifting) and farmed the reward without ascending anything. The peak
+    # form pays only for a NEW episode-high base height, so vibration earns exactly 0 and the
+    # only way to score is to actually get up the stairs. Scale check: the episode total equals
+    # 200 x climb_height (see the docstring), so a 2 m climb at weight 2.0 is ~0.4/s versus
+    # track_lin_vel_xy 1.07/s - enough to push, not enough to dominate.
+    # Rollback: func=mdp.body_climb_progress, weight=1.0 (pre-2026-10-28 behaviour).
+    body_climb_progress = RewTerm(
+        func=mdp.body_climb_progress_peak,
+        weight=2.0,
+        params={"command_name": "base_velocity", "min_command_speed": 0.15, "climb_speed_ref": 0.25},
+    )
 
     # -- base
     base_linear_velocity = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
@@ -458,7 +564,9 @@ class RewardsCfg:
         # 0.05 only filters contact-jitter while every real lift pays off. Then 0.05 -> 0.02:
         # the residual -0.0015 came from 0.02-0.05 s lifts being charged on landing; 0.02
         # flips them positive (raising weight alone would also amplify the negative term).
-        weight=0.5,
+        # 2026-10-29 P0-B: 0.5 -> 2.0, see the GAIT_SHAPING block at the top - the term had
+        # decayed to 0.0065/episode (dead) because the dog stopped lifting its wheels at all.
+        weight=FEET_AIR_TIME_WEIGHT,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_BODY_NAMES),
             "command_name": "base_velocity",
@@ -472,7 +580,11 @@ class RewardsCfg:
     )
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-0.1,
+        # 2026-10-29 P0-B: -0.1 -> -0.5. This is THE term that kills the "drag the locked
+        # wheels along the floor" gait: it charges contact-gated wheel speed, so skidding to
+        # track the velocity command is no longer free. Measured -0.027/episode before, i.e.
+        # dragging was essentially unpunished while it was the policy's whole strategy.
+        weight=FEET_SLIDE_WEIGHT,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_BODY_NAMES),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_BODY_NAMES),
@@ -490,7 +602,11 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_BODY_NAMES),
             "std": 0.05,
             "tanh_mult": 2.0,
-            "target_height": 0.30,
+            # 2026-10-29 P0-B: 0.30 -> 0.19 m. 0.19 = wheel radius 0.095 + level-2 riser 0.09,
+            # i.e. the height that actually clears the stair. The old 0.30 demanded clearing a
+            # 0.20 m step: a 0.12 m lift scored exp(-2.6)=0.07 (useless as a bootstrap), while
+            # 0.19 scores 0.68 - the term finally pays for the first, small lift.
+            "target_height": CLEARANCE_TARGET_H,
             # 2026-10-23 P0-3: command gate - the air gate alone still paid +0.594 per
             # episode for lifting the legs IN PLACE while making no forward progress.
             # Only envs that are actually commanded to move (|cmd_xy| >= 0.2 m/s) collect
@@ -596,6 +712,35 @@ class CurriculumCfg:
         },
     )
     terrain_performance_by_type = CurrTerm(func=mdp.terrain_performance_by_type)
+    # 2026-10-28 P0-B: cap the terrain difficulty while the robot has not demonstrated a
+    # single climb. Runs AFTER terrain_levels (dict order) and clamps it to FREEZE_LEVEL, so
+    # new resets spawn on easy columns (level 2 -> riser ~0.09 m instead of level 9 -> 0.23 m).
+    # Rationale: the stock gate promotes on 4 m of HORIZONTAL travel, which on stairs is
+    # satisfied by skittering around the pit floor - measured level 0.51 -> 5.70 in 1142
+    # iterations with up_share = 0.0000, then frozen for 8000 more. Set
+    # GEESUN_D30W_FREEZE_LEVEL=-1 to disable (stock behaviour).
+    terrain_levels_freeze = CurrTerm(func=mdp.freeze_terrain_levels, params={"max_level": FREEZE_LEVEL})
+    # 2026-10-30 P0-C: CLIMB-DRIVEN curriculum. Moves the difficulty cap one row up/down based
+    # on the EMA of the actual climbing share (net base rise > 6 cm while upright), replacing the
+    # stock "4 m of horizontal travel" gate that on stairs promoted 0.5 -> 5.7 in 1142 iterations
+    # while nothing was climbing. Pairs with GEESUN_D30W_STEP_H="0.02,0.23" so the ten rows are
+    # a real ladder (row r -> 0.02 + (r+eta)/10 x 0.21 m). Disable with GEESUN_D30W_ADAPTIVE=0.
+    stairs_adaptive = CurrTerm(
+        func=mdp.adaptive_stairs_levels,
+        params={
+            "enabled": ADAPTIVE_LEVELS,
+            "start_cap": ADAPT_CAP,
+            "max_level": 9,
+            "min_level": 0,
+            "promote_share": ADAPT_PROMOTE,
+            "demote_share": ADAPT_DEMOTE,
+            "cooldown_steps": 1500,
+        },
+    )
+    # 2026-10-27 P0-3: up/down split of the stairs statistics (Curriculum/stairs_updown/*).
+    # The curriculum cannot tell climbing from descending, so "下楼上不去" is invisible in the
+    # existing curves; this term classifies each env by its episode net height change.
+    stairs_updown = CurrTerm(func=mdp.stairs_updown_performance)
     lin_vel_cmd_levels = CurrTerm(
         func=mdp.gated_lin_vel_cmd_levels,
         params={
@@ -618,7 +763,17 @@ class CurriculumCfg:
             # so x_max froze at 0.30 for 3456 iterations (curriculum deadlock). Lowering to
             # 0.65 + hold 1 lets x_max climb one 0.05 step per eval window once success is
             # merely above-average, breaking the deadlock while still gating on real success.
-            "min_success_rate": 0.65,
+            # 2026-10-24 P0 (speed-gate 限速): 0.65 -> 0.80. Measured on run
+            # 2026-10-24_09-13-04_airy_A_stairs_only: with the 0.65 gate x_max climbed
+            # 0.30 -> 1.00 one 0.05 step per 250 iterations while success_rate slid
+            # 0.93 -> 0.77, mean_err_xy rose 0.087 -> 0.159 and mean_reward fell
+            # 22.4 -> 14.7 (monotonic past x_max = 0.85). 0.80 stops widening once the
+            # tracking quality degrades - the range settles around x_max 0.85-0.90 and
+            # lets the policy catch up instead of outrunning it (2026-10-12 collapse mode,
+            # lite). NOT comparable to the P0-1 deadlock: terrain move_up only requires
+            # x_max >= min_x_max_for_move_up (0.1), so a held x_max cannot freeze terrain.
+            # Rollback: 0.80 -> 0.65. Stricter variant: 0.85 pins x_max near 0.80.
+            "min_success_rate": 0.80,
             "min_env_steps": 6000,
             "min_episodes": 4000,
             "hold": 1,
