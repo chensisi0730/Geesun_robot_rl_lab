@@ -16,7 +16,7 @@
 #   mean_error_xy_ms    < 0.15           跟踪质量
 #
 # 前置条件（pre-flight）：GPU 空闲、无其它 Isaac Sim 实例（两个并发 = C++ 静默 abort）。
-# 段间冷却 45 s：上一段退出后 GPU 上下文未释放就启动下一段会卡在渲染初始化。
+# 段间冷却 1 s：上一段退出后 GPU 上下文未释放就启动下一段会卡在渲染初始化。
 #
 # 用法：
 #   bash scripts/tests/validate_wheel_lock_flat.sh                 # 用最新 run 的最新 ckpt
@@ -61,7 +61,7 @@ fi
 if command -v nvidia-smi > /dev/null; then
   USED=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
   if [ "${USED:-0}" -gt 2000 ]; then
-    echo "[WARN] GPU 显存已占用 ${USED} MiB（残留上下文？），建议等 45 s 再跑"
+    echo "[WARN] GPU 显存已占用 ${USED} MiB（残留上下文？），建议等 1 s 再跑"
   fi
 fi
 
@@ -73,7 +73,7 @@ GEESUN_D30W_JOINT_POS=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True timeout
   --tb_tag flat_lock_jp0 --num_envs "$NUM_ENVS" --steps "$STEPS" \
   > outputs/validate_wheel_lock_flat_lock_jp0.log 2>&1
 echo "[INFO] V1 定量 exit=$?  log: outputs/validate_wheel_lock_flat_lock_jp0.log"
-sleep 45
+sleep 1
 
 # ---------------------------------------------------------------- 2) V2 定量：自由轮 + 无惩罚
 echo "[INFO] === V2 定量：自由轮 + 无惩罚 (GEESUN_D30W_WHEEL_LOCK=0) ==="
@@ -83,7 +83,7 @@ GEESUN_D30W_WHEEL_LOCK=0 GEESUN_D30W_JOINT_POS=0 PYTORCH_CUDA_ALLOC_CONF=expanda
   --tb_tag flat_free_jp0 --num_envs "$NUM_ENVS" --steps "$STEPS" \
   > outputs/validate_wheel_lock_flat_free_jp0.log 2>&1
 echo "[INFO] V2 定量 exit=$?  log: outputs/validate_wheel_lock_flat_free_jp0.log"
-sleep 45
+sleep 1
 
 # ---------------------------------------------------------------- 3/4) 录像：肉眼确认是否真迈步
 echo "[INFO] === V1 录像：锁轮 + 无惩罚 ==="
@@ -95,7 +95,7 @@ GEESUN_D30W_JOINT_POS=0 timeout 1800 \
   --camera_view side --camera_distance 0.57 --camera_height 1.2 --camera_focal 21 \
   > outputs/validate_wheel_lock_flat_video_lock.log 2>&1
 echo "[INFO] V1 录像 exit=$?  log: outputs/validate_wheel_lock_flat_video_lock.log"
-sleep 45
+sleep 1
 
 echo "[INFO] === V2 录像：自由轮 + 无惩罚 ==="
 GEESUN_D30W_WHEEL_LOCK=0 GEESUN_D30W_JOINT_POS=0 timeout 1800 \
