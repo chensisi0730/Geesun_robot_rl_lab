@@ -17,8 +17,16 @@ from isaaclab.utils import configclass
 
 from unitree_rl_lab.assets.robots import unitree_actuators
 
-UNITREE_MODEL_DIR = "/home/css/work/robot/unitree/unitree_rl_lab_mini_fix/unitree_model"  # Replace with the actual path to your unitree_model directory
-UNITREE_ROS_DIR = "/home/css/work/robot/unitree/unitree_ros"  # Replace with the actual path to your unitree_ros package
+# Repo root: .../Geesun_robot_rl_lab
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.."))
+
+# Directory containing the Unitree USD files (Go2/, G1/, H1/, ...).
+# Can be overridden with the UNITREE_MODEL_DIR environment variable.
+UNITREE_MODEL_DIR = os.environ.get("UNITREE_MODEL_DIR", os.path.join(_REPO_ROOT, "unitree_model"))
+
+# Directory containing the Unitree ROS description files (URDF + meshes).
+# Can be overridden with the UNITREE_ROS_DIR environment variable.
+UNITREE_ROS_DIR = os.environ.get("UNITREE_ROS_DIR", "/home/css/work/robot/unitree/unitree_ros")
 
 
 @configclass

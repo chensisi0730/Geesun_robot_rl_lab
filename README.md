@@ -33,7 +33,7 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
   - Use a python interpreter that has Isaac Lab installed, install the library in editable mode using:
 
     ```bash
-    conda activate env_isaaclab
+    conda activate env_isaaclab_sim5
     ./unitree_rl_lab.sh -i
     # restart your shell to activate the environment changes.
     ```
