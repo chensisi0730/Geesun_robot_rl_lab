@@ -14,6 +14,9 @@
 **/*.usdc
 **/*.usdz
 
+# Unitree model assets (downloaded separately, see README)
+unitree_model/
+
 # Python
 .DS_Store
 **/*.egg-info/
