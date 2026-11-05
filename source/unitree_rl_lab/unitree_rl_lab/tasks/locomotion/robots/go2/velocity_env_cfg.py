@@ -253,13 +253,20 @@ class ObservationsCfg:
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100))
         joint_effort = ObsTerm(func=mdp.joint_effort, scale=0.01, clip=(-100, 100))
         last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))
+        # offset 必须保持默认值 0.5，这里显式写出以避免后人误改:
+        #   height = sensor.data.pos_w.z - ray_hits_w.z - offset
+        # 上面 SceneCfg 里 20 m 的 OffsetCfg 只抬高射线起点, 不进入 pos_w (实测 pos_w.z ≈ 0.40)。
+        # 若误改为 20.5, raw 会到约 -20, 187 维全部被 clip 钉成常数, 等于没有传感器。
         height_scanner = ObsTerm(func=mdp.height_scan,
-            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
             clip=(-1.0, 5.0),
         )
 
-        def __post_init__(self):
-            self.history_length = 5
+        # NOTE: history_length 已关闭 (与 GEESUN-DOG 分支的 height_scanner 消融口径对齐)。
+        # 打开时 critic 每项堆 5 帧, height_scanner 由 187 维膨胀到 935 维,
+        # critic 输入层维度随之变化 -> 旧 checkpoint 无法 resume, 需重新训练。
+        # def __post_init__(self):
+        #     self.history_length = 5
 
     # privileged observations
     critic: CriticCfg = CriticCfg()
